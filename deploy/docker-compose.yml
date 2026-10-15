@@ -1,0 +1,99 @@
+# OpnAgent deployment.
+#   bash deploy/bootstrap.sh          # once, on the Linux host
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# The gateway creates sandboxes as SIBLING containers through the host
+# docker socket (OpenShell's supported container deployment shape); the
+# hermes sandbox itself is created by the launcher via the openshell CLI.
+name: opnagent
+
+services:
+  # One-shot: fresh named volumes arrive root-owned; the gateway runs
+  # non-root and SQLite WAL needs write access to /var/openshell.
+  state-init:
+    image: alpine:3.20
+    volumes:
+      - openshell-state:/d
+    command: ["sh", "-c", "chmod -R a+rwX /d"]
+    restart: "no"
+
+  gateway:
+    image: ghcr.io/nvidia/openshell/gateway:${OPENSHELL_IMAGE_TAG:-latest}
+    container_name: openshell-gateway
+    restart: unless-stopped
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
+    group_add:
+      - "${OPENSHELL_DOCKER_GID:?run deploy/bootstrap.sh first}"
+    ports:
+      # Local-only: TLS is disabled on the compose net. Expose beyond
+      # 127.0.0.1 only behind a reverse proxy or with gateway mTLS.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - openshell-state:/var/openshell
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same absolute path on host and in-container (see container-deployment docs):
+      - "${OPENSHELL_SUPERVISOR_BIN:?}:${OPENSHELL_SUPERVISOR_BIN:?}:ro"
+      - ./gateway.toml:/etc/openshell/gateway.toml:ro
+      # Sandbox-protocol JWT signing material (bootstrap.sh generate-certs);
+      # paths referenced by gateway.toml [openshell.gateway.gateway_jwt].
+      - "${OPENSHELL_TLS_DIR:?run deploy/bootstrap.sh first}:/var/openshell/tls:ro"
+    environment:
+      OPENSHELL_GATEWAY_CONFIG: /etc/openshell/gateway.toml
+      OPENSHELL_COMPUTE_DRIVER: docker
+      OPENSHELL_GRPC_ENDPOINT: http://host.openshell.internal:8080
+      OPENSHELL_DOCKER_SUPERVISOR_BIN: ${OPENSHELL_SUPERVISOR_BIN:?}
+      OPENSHELL_DB_URL: sqlite:/var/openshell/openshell.db
+      OPENSHELL_DISABLE_TLS: "true"
+      # The image's user has HOME=/; the credential-storage KEK defaults to
+      # $XDG_STATE_HOME/openshell/gateway/credentials/... Keep both on the
+      # persistent volume — an ephemeral KEK silently makes stored provider
+      # credentials undecryptable after any container recreate.
+      HOME: /var/openshell
+      XDG_STATE_HOME: /var/openshell
+    # No container healthcheck: 8080 is h2c gRPC (an HTTP spider GET would
+    # report a false unhealthy), and nothing gates on health — the launcher
+    # polls `openshell status` until the gateway answers.
+
+  launcher:
+    build: ../launcher
+    image: opnagent-launcher:latest
+    container_name: opnagent-launcher
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_started
+    ports:
+      # The users.json-gated web entry point. The bind host:port mirrors
+      # config/listen.json via deploy/.env (OPN_LISTEN_HOST/PORT written by
+      # bootstrap.sh) — after editing listen.json rerun bootstrap.sh, then
+      # `up -d launcher` (port remapping needs a container recreate).
+      # Non-loopback binds serve plain http: the login gate is the only
+      # defense; put a TLS reverse proxy in front for long-term LAN use.
+      # The GATEWAY port above stays 127.0.0.1 no matter what.
+      - "${OPN_LISTEN_HOST:-127.0.0.1}:${OPN_LISTEN_PORT:-8000}:8000"
+    volumes:
+      # rw (not ro): the /admin console writes back the four list files
+      # and users.json. Real LLM keys stay protected by host file
+      # permissions (chmod 600 config/); the console never displays or
+      # edits LLM_Porting_Map.json / listen.json.
+      - ../config:/config
+      # Hermes backup/restore staging: zips of ~/.hermes + ~/workspace
+      # saved by recreate_sandbox before every sandbox delete, plus
+      # applied-spec.json (the skip-recreate hash). bootstrap.sh mkdir's
+      # it; keep the last few sets (BACKUP_SETS_KEPT) — host side, so it
+      # survives even `down && up` of the launcher.
+      - ../backups:/backups
+    environment:
+      OPN_GATEWAY_URL: http://gateway:8080
+      OPN_SANDBOX_IMAGE: opnagent-sandbox:latest
+      OPN_BACKUP_MAX_BYTES: 5368709120
+      # Set a fixed secret to keep sessions across restarts:
+      # OPN_SESSION_SECRET: <64-hex>
+    logging:
+      driver: json-file
+      options: { max-size: "10m" }
+
+volumes:
+  openshell-state:

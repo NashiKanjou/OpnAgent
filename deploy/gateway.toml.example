@@ -1,0 +1,21 @@
+# Reference only — the compose file configures the gateway via env vars.
+# Copy into a mounted path (e.g. /home/openshell/.config/openshell/gateway.toml)
+# when you need features env vars don't cover, such as custom supervisor
+# middleware (used to enforce host-level blacklists at the HTTP layer).
+
+# [openshell]
+# db_url = "sqlite:/var/openshell/openshell.db"
+
+# Custom egress middleware (gRPC server of your own, see
+# docs extensibility/supervisor-middleware). Example hook-up:
+#
+# [[openshell.supervisor.middleware]]
+# name = "url-blackhole"
+# grpc_endpoint = "http://middleware:50051"
+# timeout = "200ms"
+#
+# Then in the sandbox policy:
+#   network_middlewares:
+#     url-blackhole:
+#       middleware: url-blackhole
+#       endpoints: { include: ["**"] }

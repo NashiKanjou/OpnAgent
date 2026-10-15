@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "list": [
+    "requests",
+    "httpx",
+    "rich"
+  ]
+}

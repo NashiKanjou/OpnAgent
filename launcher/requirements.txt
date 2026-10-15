@@ -1,0 +1,9 @@
+fastapi>=0.115
+# [standard]: without websockets/wsproto uvicorn silently rejects every
+# WebSocket upgrade ("Unsupported upgrade request") and the hermes chat
+# sockets die at the ASGI layer before our routes ever see them.
+uvicorn[standard]>=0.30
+httpx>=0.27
+aiohttp>=3.9
+python-multipart>=0.0.9
+PyYAML>=6.0

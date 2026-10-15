@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "user-list": [
+    { "username": "admin", "passkey": "change-me", "role": "admin" }
+  ]
+}

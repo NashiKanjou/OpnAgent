@@ -1,0 +1,56 @@
+opn-shim: listening 127.0.0.1:28652 -> https://localhost:28651/v1 (cred env OPNL_0 = set)
+opn-shim: "GET / HTTP/1.1" 403 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 64257)
+Traceback (most recent call last):
+  File "D:\Python\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "D:\Python\Lib\http\server.py", line 500, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\Python\Lib\http\server.py", line 488, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "D:\repo\experiment\OpnAgent\sandbox\shim\shim.py", line 325, in do_GET
+    def do_GET(self):    self._proxy("GET")
+                         ~~~~~~~~~~~^^^^^^^
+  File "D:\repo\experiment\OpnAgent\sandbox\shim\shim.py", line 212, in _proxy
+    return self._denied(403, "invalid api key for this local endpoint")
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\repo\experiment\OpnAgent\sandbox\shim\shim.py", line 199, in _denied
+    self.wfile.write(body)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\Python\Lib\socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionAbortedError: [WinError 10053] 連線已被您主機上的軟體中止。
+----------------------------------------
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.03s total=0.03s
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.00s total=0.00s
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.00s total=0.00s
+opn-shim: "POST /v1/x HTTP/1.1" 403 -
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.00s total=0.00s
+opn-shim: "POST /v1/messages HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/messages -> 200 ttfb=0.02s total=0.02s
+opn-shim: "POST /v1/messages HTTP/1.1" 403 -
+opn-shim: "POST /v1/messages HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/messages -> 200 ttfb=0.00s total=0.00s
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.00s total=0.01s
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.01s total=0.01s
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.03s total=0.03s
+opn-shim: "POST /v1/chat/completions HTTP/1.1" 200 -
+opn-shim: 12:09:19 POST /v1/chat/completions -> 200 ttfb=0.02s total=0.02s

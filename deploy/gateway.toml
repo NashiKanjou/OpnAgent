@@ -1,0 +1,39 @@
+# OpnAgent gateway configuration — mounted into the gateway container and
+# selected via OPENSHELL_GATEWAY_CONFIG (see deploy/docker-compose.yml).
+#
+# Driver/endpoint/database/TLS settings stay as OPENSHELL_* env vars there
+# (some fields are env-only and the loader rejects them in this file).
+[openshell]
+version = 2
+
+[openshell.gateway]
+# Our hermes service is a loopback listener reached over the TLS-less
+# gateway; without this the gateway may refuse to route plaintext HTTP
+# sandbox service URLs (configuration.mdx: "Allow plaintext HTTP routing
+# for loopback sandbox service URLs").
+enable_loopback_service_http = true
+
+[openshell.gateway.auth]
+# Gateway >= ~0.1.2 refuses `sandbox create` on the docker driver without a
+# user identity ("docker sandboxes require launch-scoped gateway
+# authentication"), and our TLS-less setup has no client certs to present.
+# This is the documented local-development/trusted-proxy escape hatch
+# (configuration.mdx): user-facing CLI calls are accepted unauthenticated,
+# while sandbox supervisors still authenticate with gateway-minted JWTs.
+#
+# Compensating controls keeping this acceptable here:
+#   - gateway port published on 127.0.0.1 only (never reach LAN)
+#   - the ONLY user entry point is the launcher (8000) behind users.json
+#   - state volume perms kept off the LAN by the same bind
+allow_unauthenticated_users = true
+
+[openshell.gateway.gateway_jwt]
+# Launch-scoped sandbox-session credentials. Newer docker drivers refuse
+# `sandbox create` without the ability to mint these; bootstrap.sh generates
+# the keys with the image's own `generate-certs` and the compose file mounts
+# them read-only at /var/openshell/tls.
+signing_key_path = "/var/openshell/tls/jwt/signing.pem"
+public_key_path  = "/var/openshell/tls/jwt/public.pem"
+kid_path         = "/var/openshell/tls/jwt/kid"
+gateway_id       = "opnagent"
+ttl_secs         = 3600
