@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 SUPERVISOR_DIR="${OPN_STATE_DIR:-$HOME/openshell}/supervisor"
 SUPERVISOR_BIN="$SUPERVISOR_DIR/openshell-sandbox"
-OPENSHELL_IMAGE_TAG="${OPENSHELL_IMAGE_TAG:-latest}"
+OPENSHELL_IMAGE_TAG="${OPENSHELL_IMAGE_TAG:-0.1.4}"
 
 echo "== OpnAgent bootstrap =="
 
