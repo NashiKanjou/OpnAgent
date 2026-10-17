@@ -163,7 +163,7 @@ RUN set -e; cd /opt/hermes; \
 RUN useradd --create-home --shell /bin/bash opn
 COPY shim/shim.py /opt/opnagent/shim/shim.py
 COPY entrypoint.sh /opt/opnagent/entrypoint.sh
-RUN chmod +x /opt/opnagent/entrypoint.sh
+RUN chmod 755 /opt/opnagent/entrypoint.sh
 
 USER opn
 WORKDIR /home/opn/workspace
