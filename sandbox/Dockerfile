@@ -162,9 +162,9 @@ RUN set -e; cd /opt/hermes; \
 # No explicit --uid: ubuntu:24.04 already ships an `ubuntu` user at uid 1000.
 # OpenShell only requires non-root; our policies bind binaries by PATH, not uid.
 RUN useradd --create-home --shell /bin/bash opn
+
 COPY --chmod=0644 shim/shim.py /opt/opnagent/shim/shim.py
 COPY --chmod=0755 entrypoint.sh /opt/opnagent/entrypoint.sh
-RUN chmod 755 /opt/opnagent/entrypoint.sh
 
 USER opn
 WORKDIR /home/opn/workspace
