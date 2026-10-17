@@ -69,7 +69,7 @@ RUN set -e; \
 # v2026.7.20-era build and carries a dashboard bug — sessions page never
 # leaves "loading" — reproduced against hermes directly with our stack
 # fully bypassed).
-ARG HERMES_REF=v2026.9.24
+ARG HERMES_REF=v0.22.2
 RUN set -e; \
     git clone --depth 1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes; \
@@ -89,7 +89,7 @@ RUN set -e; \
 # Pinned to a release tag (GHCR images exist too, but we run inside OUR
 # sandbox image, not a sidecar — a sidecar would run tools outside the
 # OpenShell policy boundary, their two-container limitation #681).
-ARG HERMES_WEBUI_REF=v0.52.113
+ARG HERMES_WEBUI_REF=v0.52.458
 RUN set -e; \
     git clone --depth 1 --branch "${HERMES_WEBUI_REF}" \
       https://github.com/nesquena/hermes-webui.git /opt/hermes-webui; \
