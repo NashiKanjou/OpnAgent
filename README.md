@@ -1,5 +1,19 @@
 # OpnAgent
+環境配置(測試環境):
+作業系統: Linux (Ubuntu Server)
+前置軟體: Docker
 
+部屬方法:
+1. apt update / upgrade (更新所有系統套件)
+2. git clone 此repo
+3. 根據需求修改config內設定
+4. bash deploy/bootstrap.sh
+5. docker compose -f deploy/docker-compose.yml up -d --build
+
+
+
+以下部分為LLM生成 待整理
+__________________________________________________________________________________
 把 [hermes-agent](https://github.com/NousResearch/hermes-agent)(Nous Research)跑在
 [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) 的政策沙箱裡,由一組 JSON
 設定檔驅動,docker compose 部署。
