@@ -1,4 +1,4 @@
-# OpnAgent sandbox image: Ubuntu Server 24.04 + hermes-agent + opn-shim.
+# OpnAgent sandbox image: Ubuntu Server 2ˊ.04 + hermes-agent + opn-shim.
 #
 # This image is NOT run by docker compose — it is handed to OpenShell:
 #   openshell sandbox create --from opnagent-sandbox:latest ...
@@ -8,7 +8,7 @@
 #  - non-root USER (workload identity; UID >= 1)
 #  - WORKDIR becomes the sandbox workspace on the Docker driver
 #  - the agent and every tool it needs must be preinstalled
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -74,8 +74,9 @@ RUN set -e; \
     git clone --depth 1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes; \
     python3 -m venv /opt/hermes-venv; \
-    /opt/hermes-venv/bin/pip install --no-cache-dir -e "/opt/hermes[all]"; \
-    /opt/hermes-venv/bin/pip install --no-cache-dir "ruamel.yaml==0.18.16"; \
+    /opt/hermes-venv/bin/pip install --no-cache-dir uv; \
+    cd /opt/hermes && /opt/hermes-venv/bin/uv pip install --python /opt/hermes-venv/bin/python \
+        -r uv.lock -e ".[all]" --no-cache; \
     ln -sf /opt/hermes-venv/bin/hermes /usr/local/bin/hermes; \
     ln -sf /opt/hermes-venv/bin/hermes-agent /usr/local/bin/hermes-agent; \
     ln -sf /opt/hermes-venv/bin/hermes-acp /usr/local/bin/hermes-acp || true
