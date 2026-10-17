@@ -75,8 +75,12 @@ RUN set -e; \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes; \
     python3 -m venv /opt/hermes-venv; \
     /opt/hermes-venv/bin/pip install --no-cache-dir uv; \
-    cd /opt/hermes && /opt/hermes-venv/bin/uv pip install --python /opt/hermes-venv/bin/python \
-        -r uv.lock -e ".[all]" --no-cache; \
+    cd /opt/hermes; \
+    /opt/hermes-venv/bin/uv export --frozen --extra all --no-emit-project \
+        -o /tmp/hermes-reqs.txt; \
+    /opt/hermes-venv/bin/uv pip install --python /opt/hermes-venv/bin/python \
+        --no-cache -r /tmp/hermes-reqs.txt -e "/opt/hermes[all]"; \
+    rm -f /tmp/hermes-reqs.txt; \
     ln -sf /opt/hermes-venv/bin/hermes /usr/local/bin/hermes; \
     ln -sf /opt/hermes-venv/bin/hermes-agent /usr/local/bin/hermes-agent; \
     ln -sf /opt/hermes-venv/bin/hermes-acp /usr/local/bin/hermes-acp || true
