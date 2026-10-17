@@ -75,6 +75,7 @@ RUN set -e; \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes; \
     python3 -m venv /opt/hermes-venv; \
     /opt/hermes-venv/bin/pip install --no-cache-dir -e "/opt/hermes[all]"; \
+    /opt/hermes-venv/bin/pip install --no-cache-dir "ruamel.yaml==0.18.16"; \
     ln -sf /opt/hermes-venv/bin/hermes /usr/local/bin/hermes; \
     ln -sf /opt/hermes-venv/bin/hermes-agent /usr/local/bin/hermes-agent; \
     ln -sf /opt/hermes-venv/bin/hermes-acp /usr/local/bin/hermes-acp || true
