@@ -168,6 +168,12 @@ RUN set -e; cd /opt/hermes; \
 # OpenShell only requires non-root; our policies bind binaries by PATH, not uid.
 RUN useradd --create-home --shell /bin/bash opn
 
+# opn-shim + entrypoint. Modes explicit (--chmod): host checkouts under
+# restrictive umasks otherwise COPY root-owned 0400/0444 trees and the
+# supervisor's uid-1000 spawn dies with EACCES.
+COPY --chmod=0755 shim/entrypoint.sh /opt/opnagent/entrypoint.sh
+COPY --chmod=0644 shim/shim.py /opt/opnagent/shim/shim.py
+
 RUN chmod 755 /opt/opnagent /opt/opnagent/shim && \
     chmod 755 /opt/opnagent/entrypoint.sh && \
     chmod 644 /opt/opnagent/shim/shim.py
