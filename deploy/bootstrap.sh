@@ -135,6 +135,14 @@ docker build -t opnagent-sandbox:latest "$ROOT/sandbox"
 # the next launcher restart recreates (hermes data rides the automatic
 # backup/restore through it).
 mkdir -p "$ROOT/backups"
+# The launcher (root in-container) writes applied-spec.json and backup
+# sets here; if the dir arrived root-owned (docker auto-created the bind
+# source), the deploy user could not even rm the hash to force a
+# recreate. Open it via a throwaway container (same trick as the TLS
+# chmod pass) — with dir a+rwX, userland `rm backups/applied-spec.json`
+# works without sudo regardless of file ownership.
+docker run --rm -v "$ROOT/backups:/d" alpine:3.20 \
+  sh -c 'chmod -R a+rwX /d'
 rm -f "$ROOT/backups/applied-spec.json"
 echo "sandbox image rebuilt; launcher restart will recreate the sandbox"
 
