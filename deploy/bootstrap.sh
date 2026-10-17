@@ -74,7 +74,7 @@ if [ ! -x "$SUPERVISOR_BIN" ]; then
     echo "images did not carry the binary; downloading release tarball..."
     # Pinned like launcher/Dockerfile's CLI download; bump with the CLI.
     TB="openshell-sandbox-${ARCH}-unknown-linux-musl.tar.gz"
-    URL="${OPN_RELEASE_BASE:-https://github.com/NVIDIA/OpenShell/releases/download/v0.1.2/$TB}"
+    URL="${OPN_RELEASE_BASE:-https://github.com/NVIDIA/OpenShell/releases/download/v0.1.4/$TB}"
     TMP="$(mktemp -d)"
     curl -fsSL "$URL" -o "$TMP/$TB" && tar -xzf "$TMP/$TB" -C "$TMP" \
       && find "$TMP" -name openshell-sandbox -type f \
