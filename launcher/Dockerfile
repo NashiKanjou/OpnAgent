@@ -2,8 +2,8 @@
 # orchestrator/auth gate.
 FROM python:3.14-slim
 
-ARG OPENSHELL_VERSION=0.1.2
-ARG OPENSHELL_CLI_URL=https://github.com/NVIDIA/OpenShell/releases/download/v0.1.2/openshell-x86_64-unknown-linux-musl.tar.gz
+ARG OPENSHELL_VERSION=0.1.4
+ARG OPENSHELL_CLI_URL=https://github.com/NVIDIA/OpenShell/releases/download/v0.1.4/openshell-x86_64-unknown-linux-musl.tar.gz
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
