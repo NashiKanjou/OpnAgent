@@ -20,6 +20,8 @@ import tempfile
 import time
 import urllib.parse
 
+import yaml
+
 from datetime import datetime, timezone
 
 from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
@@ -434,6 +436,36 @@ async def _regenerate_providers(cfg: OpnConfig) -> None:
         # binaries) imported and lint then hard-failing.
         rc, out, err = await run_cli("profile", "update", profile_id(e),
                                      "-f", path)
+        if rc != 0 and "resource_version" in _cli_text(out, err):
+            # Optimistic-concurrency contract (live-learned): update
+            # demands the document carry the profile's CURRENT
+            # resource_version ("export the current profile before
+            # editing it"). Our document is generated, so fetch just
+            # that token and stamp it in — retry once.
+            rc_x, exported, err_x = await run_cli(
+                "profile", "export", profile_id(e), "-o", "yaml")
+            rv = None
+            if rc_x == 0:
+                try:
+                    rv = (yaml.safe_load(exported) or {}).get(
+                        "resource_version")
+                except yaml.YAMLError:
+                    rv = None
+            if not rv:
+                raise RuntimeError(
+                    f"profile update #{e.index}: CLI requires a non-zero "
+                    f"resource_version but export gave none: "
+                    f"{(err_x or exported)[:300]}")
+            try:
+                doc = yaml.safe_load(profile_yaml(e))
+            except yaml.YAMLError as exc:
+                raise RuntimeError(
+                    f"generated profile #{e.index} unparsable: {exc}")
+            doc["resource_version"] = rv
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(yaml.safe_dump(doc, sort_keys=False))
+            rc, out, err = await run_cli("profile", "update", profile_id(e),
+                                         "-f", path)
         if rc != 0:
             if not any(k in _cli_text(out, err)
                        for k in ("not found", "does not exist", "no such")):
