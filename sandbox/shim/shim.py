@@ -88,12 +88,20 @@ class Shim:
         # Plain http upstream is allowed (self-hosted/inference servers) but
         # the supervisor injects the REAL key at egress, so that leg is
         # cleartext — config.load_config() warns about this.
-        self.ctx = ssl.create_default_context() if self.secure else None
         # Optional custom CA bundle (corporate TLS-terminating proxies,
         # test rigs). Standard OpenSSL env var; honored on all platforms.
+        # When set it is the ONLY trust anchor: creating the default
+        # context first and then load_verify_locations()-ing the bundle
+        # into it is NOT sufficient on every OpenSSL stack (observed on
+        # Windows/Python 3.10/OpenSSL 1.1.1t: a self-signed test CA
+        # still failed CERTIFICATE_VERIFY_FAILED though loaded).
         ca = os.environ.get("OPN_SHIM_CA") or os.environ.get("SSL_CERT_FILE")
-        if self.secure and ca and os.path.exists(ca):
-            self.ctx.load_verify_locations(cafile=ca)
+        if not self.secure:
+            self.ctx = None
+        elif ca and os.path.exists(ca):
+            self.ctx = ssl.create_default_context(cafile=ca)
+        else:
+            self.ctx = ssl.create_default_context()
         # Per-thread keep-alive connection. One hermes turn fires several
         # sequential calls (chat, title-gen, tool follow-ups); a fresh
         # TCP+TLS handshake per call adds RTTs to every one of them.
@@ -174,15 +182,22 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("opn-shim: %s\n" % (fmt % args))
 
     # -- helpers ----------------------------------------------------------
+    _body_consumed = 0   # per-request, reset at top of _proxy
+
     def _denied(self, code, msg):
-        # Drain any unread request body first: under our HTTP/1.1
+        # Drain any UNREAD request body first: under our HTTP/1.1
         # keep-alive, bytes left in the socket buffer get parsed as the
         # NEXT request line (live test: an early 403 poisoned the
         # connection — next request line read "{}POST /v1/x..." -> 501).
+        # Unread is the operative word: on the 502 path _proxy already
+        # buffered the whole body, so blindly re-reading Content-Length
+        # bytes blocks on an EOF'd rfile forever and the client never
+        # receives our error response (the hang the live test tripped).
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
+        n = max(0, n - self._body_consumed)
         if n > 8 << 20:
             self.close_connection = True   # too big to eat; drop the conn
         else:
@@ -208,6 +223,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.headers.get("x-api-key", "") == self.shim.inner_key
 
     def _proxy(self, method):
+        # Handler instances are reused across keep-alive requests; _denied
+        # subtracts this from Content-Length, so it must start each request.
+        self._body_consumed = 0
         if not self._check_key():
             return self._denied(403, "invalid api key for this local endpoint")
         cred = self.shim.credential()
@@ -240,6 +258,7 @@ class Handler(BaseHTTPRequestHandler):
             # exactly one credential carrier (the supervisor swaps Bearer).
             length = self.headers.get("Content-Length")
             body = self.rfile.read(int(length)) if length else None
+            self._body_consumed = len(body) if body else 0
             # Large/streaming request bodies are not expected from LLM
             # clients; refuse rather than buffer silently.
 

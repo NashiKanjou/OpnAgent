@@ -140,6 +140,50 @@ def main():
         if SEEN.get("path") != "/v1/chat/completions":
             fails.append(f"prefix remount wrong: {SEEN.get('path')!r}")
 
+        # 4. dead upstream + consumed request body -> client must RECEIVE
+        # the 502. Regression: _denied used to re-drain Content-Length
+        # bytes from an already-EOF rfile and block forever, so the
+        # "upstream error" response was composed but never delivered.
+        DEAD_PORT = SHIM_PORT + 1          # nothing listens on +2
+        shim2_log = open(os.path.join(HERE, "shim-live.log"), "a")
+        shim2 = subprocess.Popen(
+            [sys.executable, SHIM,
+             "--listen", f"127.0.0.1:{DEAD_PORT}",
+             "--upstream", f"http://127.0.0.1:{DEAD_PORT + 1}/v1",
+             "--inner-key", FAKE_KEY,
+             "--cred-env", "OPNL_0"],
+            env=env, stderr=shim2_log, stdout=shim2_log)
+        try:
+            up2 = False
+            for _ in range(100):
+                try:
+                    http.client.HTTPConnection("127.0.0.1", DEAD_PORT,
+                                               timeout=2).request("GET", "/")
+                    up2 = True
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            if not up2:
+                fails.append("dead-upstream shim never came up")
+            else:
+                try:
+                    c = http.client.HTTPConnection("127.0.0.1", DEAD_PORT,
+                                                   timeout=10)
+                    c.request("POST", "/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {FAKE_KEY}",
+                                       "Content-Type": "application/json"},
+                              body=b'{"ping":1}')
+                    r = c.getresponse()
+                    data = r.read()
+                    if r.status != 502 or b"opn_shim" not in data:
+                        fails.append(f"dead upstream: expected 502 opn_shim, "
+                                     f"got {r.status} {data!r}")
+                except (TimeoutError, http.client.HTTPException) as exc:
+                    fails.append(f"dead upstream request hung/failed: {exc!r}")
+        finally:
+            shim2.terminate()
+            shim2.wait(timeout=5)
+
         if fails:
             print("FAIL")
             for f in fails:

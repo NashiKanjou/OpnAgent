@@ -3,15 +3,15 @@
     "key": "sk-replace-me-openai",
     "inner-port": 18001,
     "inner-key": "fake-key-local-0",
-    "context_length": 256000,
+    "context-length": 256000,
     "protocol": "openai"
   },
   "https://openrouter.ai/api/v1": {
     "key": "sk-or-replace-me",
     "inner-port": 18002,
     "inner-key": "fake-key-local-1",
-    "context_length": 256000,
-    "catalog_provider":"",
+    "context-length": 256000,
+    "catalog-provider":"",
     "provider":"OpnAgentAPI0",
     "protocol": "anthropic"
   }

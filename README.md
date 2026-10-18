@@ -25,7 +25,7 @@ ________________________________________________________________________________
          gateway:8080(ghcr.io/nvidia/openshell/gateway,掛宿主 /var/run/docker.sock)
               │  --expose 服務 URL(kernel 政策邊界 + 憑證代理)
               v
-   sandbox 容器(opnagent-sandbox:latest,Ubuntu 24.04 + hermes, network=none)
+   sandbox 容器(opnagent-sandbox:latest,Ubuntu 26.04 + hermes, network=none)
      shim :1800x(收 fake key → 換 OpenShell placeholder)→ hermes-webui :9119
 ```
 
@@ -38,7 +38,10 @@ ________________________________________________________________________________
   換回真 key。fake key/placeholder 拿到別處一律無效(錯 host → 403)。
 - 網路出口採 **allow-list-only**:政策未核准的連線一律拒絕(kernel 層 Landlock/seccomp 邊界)。
 - 政策把網路規則綁定到執行程式(readlink 解析後的 binary;腳本算它的直譯器,即
-  `/usr/bin/python3.12`),未在規則 `binaries` 清單中的程式完全無法上網。
+  沙箱基底的系統直譯器,目前 ubuntu:26.04 為 `/usr/bin/python3.14`;可在 launcher
+  以 `OPN_SANDBOX_PYTHON` 環境變數覆蓋,見 `launcher/app/policy.py` `BIN_PY_PATH`),
+  未在規則 `binaries` 清單中的程式完全無法上網(fail-closed:綁定不符時 shim
+  出口連線直接 EACCES,LLM 測試表現為 502 `upstream error: [Errno 13] Permission denied`)。
 
 ## 宿主需求
 
@@ -162,7 +165,7 @@ dashboard)**:映像 build 期 `git clone` 到 `/opt/hermes-webui`(純 Python+van
 `/opt/hermes-venv/bin/python server.py` 起在 :9119(policy 把該 checkout 掛唯讀,
 state 寫 HOME/.hermes/webui)。它以 **in-process 方式跑 hermes agent、直接讀上面那份
 config.yaml**,fake key/shim 接線完全沿用。換版:`--build-arg HERMES_WEBUI_REF=<tag>`
-(目前 v0.52.113)。排程(cron)的 tick 由 **`hermes gateway run` daemon** 驅動
+(目前 v0.52.458)。排程(cron)的 tick 由 **`hermes gateway run` daemon** 驅動
 (webui 本身不排程,官方 docker.md 有載),entrypoint 以背景程序拉起,日誌
 `/tmp/opn-gateway.log`;webui 讀 `~/.hermes/gateway_state.json` 顯示狀態。
 另:手動 "Run now" 走 multiprocessing spawn 子進程,`sem_open()` 需要
@@ -174,17 +177,19 @@ fallback 與沙箱內手動 CLI 用。
 故 **nodejs.org 不需要進 url 白名單**;缺 node 時 chat 會報
 `Chat unavailable: 1`(`_make_tui_argv` sys.exit(1))。
 
-**SQLite(pin 版)**:ubuntu:24.04 附帶的 libsqlite3 3.45.1 有 WAL-reset
-corruption bug(hermes 啟動會警告並把 state db 降為 `journal_mode=DELETE`)。
+**SQLite(pin 版)**:ubuntu 基底附帶的 libsqlite3 太舊(24.04 時代是
+3.45.1)有 WAL-reset corruption bug(hermes 啟動會警告並把 state db 降為
+`journal_mode=DELETE`)。
 Dockerfile 從源碼 build **固定版** `SQLITE_VER=3.53.4`(tarball 在
 `sqlite.org/<SQLITE_YEAR>/`,升版兩個 ARG 一起改)裝進 `/usr/local`,
-ldconfig 讓 python3.12 的 stdlib sqlite3 載到新庫;build 最後一行 assert
+ldconfig 讓系統 python3 的 stdlib sqlite3 載到新庫;build 最後一行 assert
 会在 pin 與實際載入版本不符時直接失敗,不會靜默漂移。
 
 **hermes 版本**:0.20 起 PyPI 不再是發布管道(wheel 拒 build、資產改 runtime
 解析),沙箱映像改從 GitHub 日期標籤 `git clone` 來源Checkout(/opt/hermes,
 政策上唯讀)+ `pip install -e`。換版:`docker build -t opnagent-sandbox:latest
---build-arg HERMES_REF=<tag> sandbox` 後重啟 launcher(目前 v2026.9.24 = 0.21.5)。
+--build-arg HERMES_REF=<tag> sandbox` 後重啟 launcher(目前 v0.22.2;
+版本標籤與日期標籤皆可,`git ls-remote --tags` 可查)。
 
 ## 驗證清單
 
@@ -229,13 +234,15 @@ openshell sandbox exec -n opnagent -- env | grep -i OPNL_          # 只有 plac
    docker 驅動拒絕 `sandbox create`);防線是 127.0.0.1 綁定 + launcher
    登入頁,**絕不可**把 8080 暴露到任何網路。要給群組/外部用,請置于
    TLS reverse proxy 後,或依官方文件啟用 mTLS(`generate-certs`)。
-6a. **plugin_compat 警告(無害,升版前必查)**:`tools.approval.
-   reset_current_session_key moved to tools.approval_context…` 來自
+6a. **plugin_compat 警告(已修)**:`tools.approval.
+   reset_current_session_key moved to tools.approval_context…` 過去來自
    hermes-webui 自己的舊路徑 import(streaming.py;hermes 對 external plugin
-   保留 shim,故僅警告)。截至 webui v0.52.113(=最新 tag)上游未修。**升
-   `HERMES_REF` 前先確認新版 webui 已改用 `tools.approval_context`**,否則
-    approval/session-key 鏈會 ImportError;不要用 sed 補 webui checkout
-   (破壞映像=乾淨 tag 的溯源原則)。
+   保留 shim,故僅警告)。webui 自 v0.52.458 起改走 `api/agent_compat.py`
+   的 `agent_attr()`:先看舊模組自己的 namespace(不含 PEP 562 `__getattr__`
+   指標),再導向新模組 `tools.approval_context`,因此同時相容拆分前/後的
+   hermes 且**不再觸發**該警告。**升 `HERMES_REF` 前仍要確認 webui 版有
+   `agent_attr` 這層**(缺它 approval/session-key 鏈會 ImportError);
+   不要用 sed 補 webui checkout(破壞映像=乾淨 tag 的溯源原則)。
 6. 介面鏈為 hermes-webui → (server.py 缺席時)hermes `dashboard` → `hermes serve`,
    entrypoint 已內含偵測。hermes-webui 的串流走 SSE(非 WS),launcher proxy 逐塊
    直通;若某版改回 WS,launcher 的 catch-all WS 路由(`/{path:path}`)已覆蓋。
@@ -254,7 +261,11 @@ openshell sandbox exec -n opnagent -- env | grep -i OPNL_          # 只有 plac
   python tests/test_shim_live.py    # shim 實戰:假 key 拒絕、placeholder 改寫、SSE 串流
   python tests/probe_launcher.py    # launcher web 實跑:登入/cookie/503 未就緒/路由不遮蔽 hermes
   ```
-- `refdocs/` 是 OpenShell 官方文件快照(政策/provider/容器部署),改政策生成器前必讀。
+- `refdocs/` 是官方文件快照:**OpenShell v0.1.4**(政策/provider/容器部署,
+  `refdocs/how-it-works|about|extensibility/`)與 **hermes-agent v0.22.2**
+  精選(`refdocs/hermes/`:config.yaml 契約、provider runtime、gateway
+  internals、env 變數、CLI、docker 部署)。改政策生成器或 entrypoint 的
+  hermes 契約生成前必讀對應快照(溯源與同步方式見 `refdocs/README.md`)。
 - launcher 日誌:`docker logs -f opnagent-launcher`(`bootstrap failed: ...` 帶原因)。
 - shim 日誌在沙箱內 `/tmp/opn-shim-*.log`;`openshell sandbox exec -n opnagent -- cat /tmp/opn-shim-0.log`。
 - 本機(Windows)只能改碼;所有 build/測試在 Linux 宿主進行。

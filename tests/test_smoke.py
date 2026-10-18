@@ -62,7 +62,7 @@ def main():
     p = providers.profile_yaml(e0)
     check("profile has env var", "OPNL_0" in p)
     check("profile paths", "/v1/**" in p and "/v1" in p)
-    check("profile binaries", "/usr/bin/python3.12" in p)
+    check("profile binaries", policy.BIN_PY_PATH in p)
     check("profile bearer", "auth_style: bearer" in p)
 
     # --- policy ------------------------------------------------------------
@@ -131,7 +131,7 @@ def main():
     check("many-host policy is anchor/alias-free",
           "&id" not in y4b and "*id" not in y4b
           and y4b.count("url-allow-") == 12
-          and y4b.count("/usr/bin/python3.12") >= 12)
+          and y4b.count(policy.BIN_PY_PATH) >= 12)
 
     # --- auth ---------------------------------------------------------------
     t = auth.make_token("admin")

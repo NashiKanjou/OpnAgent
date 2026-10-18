@@ -14,6 +14,7 @@ import re
 import yaml
 
 from .config import LLMEntry
+from .policy import BIN_PY_PATH
 
 PROFILE_CATEGORY = "inference"
 
@@ -77,8 +78,10 @@ def profile_yaml(entry: LLMEntry) -> str:
         ],
         "discovery": {"credentials": [f"opn_key_{entry.index}"]},
         "endpoints": endpoints,
-        # Scripts count as their interpreter: the shim runs under
-        # /usr/bin/python3.12 (venv python symlinks there, readlink -f).
-        "binaries": ["/usr/bin/python3.12"],
+        # Scripts count as their interpreter: the shim runs under the
+        # base image's system python (venv python symlinks there,
+        # readlink -f). Same constant the pypi/url rules bind to —
+        # policy.BIN_PY_PATH, OPN_SANDBOX_PYTHON-overridable.
+        "binaries": [BIN_PY_PATH],
     }
     return yaml.safe_dump(doc, sort_keys=False)

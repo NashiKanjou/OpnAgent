@@ -19,13 +19,23 @@ reserved `_provider_*` rules automatically.
 from __future__ import annotations
 
 import json
+import os
 
 import yaml
 
 from .config import OpnConfig
 
-# /usr/bin/python3.12: hermes, pip and the shim all resolve to this
-# interpreter (OpenShell identifies scripts by their interpreter binary).
+# The interpreter hermes, pip and the shim all resolve to (OpenShell
+# identifies scripts by their interpreter binary). Must name the REAL
+# resolved path in the sandbox image: an unmatched binary fails CLOSED
+# in the sneakiest way — allow-list-only means the shim's connect()
+# gets EACCES from the supervisor and every LLM call surfaces as
+# `upstream error: [Errno 13] Permission denied` (502 from the shim).
+# ubuntu:26.04 ships Python 3.14 (older bases: 3.12 — the refdocs
+# network-rules snapshot still shows the 24.04 example). Overridable
+# via env so a base-image python bump is a compose-env fix, not a
+# launcher rebuild.
+BIN_PY_PATH = os.environ.get("OPN_SANDBOX_PYTHON", "/usr/bin/python3.14")
 # FUNCTIONS returning fresh dicts, on purpose: shared module-level
 # objects make PyYAML emit YAML anchors/aliases for the repeats, and
 # the deployed OpenShell parser rejects high alias ratios ("alias_

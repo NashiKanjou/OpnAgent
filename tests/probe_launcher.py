@@ -8,6 +8,7 @@ not-ready 503 (bootstrap cannot finish on a dev box without openshell).
 
 Run from anywhere:  python tests/probe_launcher.py
 """
+import json
 import os
 import subprocess
 import sys
@@ -85,8 +86,17 @@ def main():
 
         c = httpx.Client(base_url=BASE, follow_redirects=False)
         r = c.post("/login", data={"username": "admin", "passkey": "change-me"})
+        # login_post redirects by ROLE (main.py): admin -> /admin, else /.
+        # Derive the expectation from the same users.json the server loaded
+        # instead of hardcoding a path (a stale "/" here failed the probe
+        # once the admin redirect shipped).
+        with open(os.path.join(ROOT, "config", "users.json"),
+                  encoding="utf-8") as f:
+            users = json.load(f)["user-list"]
+        home = next(("/admin" if u.get("role") == "admin" else "/")
+                    for u in users if u.get("username") == "admin")
         check("correct passkey -> 302 + cookie",
-              r.status_code == 302 and r.headers["location"] == "/"
+              r.status_code == 302 and r.headers["location"] == home
               and "opnagent_session" in r.headers.get("set-cookie", ""),
               str(dict(r.headers)))
         check("session cookie is httponly",

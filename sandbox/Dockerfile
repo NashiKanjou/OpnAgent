@@ -1,4 +1,4 @@
-# OpnAgent sandbox image: Ubuntu Server 2ˊ.04 + hermes-agent + opn-shim.
+# OpnAgent sandbox image: Ubuntu Server 26.04 + hermes-agent + opn-shim.
 #
 # This image is NOT run by docker compose — it is handed to OpenShell:
 #   openshell sandbox create --from opnagent-sandbox:latest ...
@@ -23,11 +23,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git ripgrep jq \
     && rm -rf /var/lib/apt/lists/*
 
-# SQLite, pinned: ubuntu:24.04 ships libsqlite3 3.45.1, which hermes
-# blacklists at startup (WAL-reset corruption bug, sqlite.org/wal.html
+# SQLite, pinned: ubuntu bases ship a libsqlite3 hermes blacklists at
+# startup (24.04-era: 3.45.1 — WAL-reset corruption bug, sqlite.org/wal.html
 # #walresetbug) — every state db then degrades to journal_mode=DELETE
 # with a WARNING per process per db. Fix is >=3.51.3, so we build the
-# release from source into /usr/local: python3.12's stdlib _sqlite3
+# release from source into /usr/local: the system python3's stdlib _sqlite3
 # dlopen's libsqlite3.so.0 by soname (stable since 3.x, ABI backward
 # compatible) and ldconfig's cache resolves /usr/local/lib (listed first
 # via libc.conf) ahead of /usr/lib/x86_64-linux-gnu. The venv python is
@@ -59,16 +59,18 @@ RUN set -e; \
 # ship the checkout itself (their sanctioned layout) and pip-EDITABLE
 # install into a dedicated venv: the guard only blocks bdist_wheel/sdist,
 # build_editable is explicitly allowed. venv python stays the resolved
-# interpreter OpenShell network rules bind to (/usr/bin/python3.12 —
-# venv's python symlinks there); PYTHONDONTWRITEBYTECODE keeps the
+# system interpreter OpenShell network rules bind to (on this base:
+# /usr/bin/python3.14 — venv's python symlinks there; the launcher names
+# that path in policy/profile binaries, launcher/app/policy.py
+# BIN_PY_PATH / OPN_SANDBOX_PYTHON); PYTHONDONTWRITEBYTECODE keeps the
 # policy-read-only checkout free of runtime .pyc writes.
 #
-# GitHub date tags are the primary releases; --build-arg HERMES_REF=
-# rc.35-v0.21.5 selects the release-candidate series instead. The
-# v2026.9.24 tag IS version 0.21.5 (PyPI's newest, 0.19.0, is the
-# v2026.7.20-era build and carries a dashboard bug — sessions page never
-# leaves "loading" — reproduced against hermes directly with our stack
-# fully bypassed).
+# GitHub publishes both semver tags (current pin v0.22.2) and date tags;
+# --build-arg HERMES_REF=<tag> accepts either (git ls-remote --tags to
+# check). Historical note: v2026.9.24 WAS version 0.21.5; PyPI's newest
+# (0.19.0) is a v2026.7.20-era build carrying a dashboard bug — sessions
+# page never leaves "loading" — reproduced against hermes directly with
+# our stack fully bypassed, which is why PyPI stays off the table.
 ARG HERMES_REF=v0.22.2
 RUN set -e; \
     git clone --depth 1 --branch "${HERMES_REF}" \
@@ -115,7 +117,7 @@ RUN set -e; \
 # baseline) so hermes never downloads node from nodejs.org at runtime —
 # keep it out of the URL whitelist. Version looked up from nodejs.org's
 # index.json (newest-first) so the patch number never needs hand-
-# bumping. (.tar.gz not .tar.xz: ubuntu:24.04 ships no xz binary.)
+# bumping. (.tar.gz not .tar.xz: the ubuntu base ships no xz binary.)
 ARG NODE_MAJOR=26
 RUN set -e; \
     NV=$(curl -fsSL https://nodejs.org/dist/index.json \
@@ -164,7 +166,7 @@ RUN set -e; cd /opt/hermes; \
     test -f ui-tui/dist/entry.js; \
     echo "hermes assets: web_dist + ui-tui dist OK"
 
-# No explicit --uid: ubuntu:24.04 already ships an `ubuntu` user at uid 1000.
+# No explicit --uid: the ubuntu base already ships an `ubuntu` user at uid 1000.
 # OpenShell only requires non-root; our policies bind binaries by PATH, not uid.
 RUN useradd --create-home --shell /bin/bash opn
 

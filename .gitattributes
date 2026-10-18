@@ -1,0 +1,11 @@
+# Everything here deploys to Linux; text files MUST be LF in the working
+# tree. Without this, a host clone with core.autocrlf=true (e.g. a
+# ~/.gitconfig carried over from the Windows dev box) checks out CRLF
+# and bash dies at line 6 of bootstrap.sh:
+#   set: 'pipefail\r': invalid option name
+# Attributes beat core.autocrlf, so this pins it on every machine.
+# Note: sandbox/Dockerfile COPYs entrypoint.sh + shim/shim.py from the
+# host checkout — a CRLF checkout also bakes CRLF scripts into the
+# image (bad interpreter on exec), so rebuild after normalizing.
+* text=auto eol=lf
+*.pyc binary
