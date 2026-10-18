@@ -118,6 +118,21 @@ async def run_cli(*args: str, env: dict | None = None, timeout: int = 120,
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _cli_text(out: str, err: str) -> str:
+    """Normalized openshell CLI output for substring checks.
+
+    The deployed CLI (miette-style) colorizes and may print the
+    diagnostics block on stdout with only "Error: ..." on stderr, so
+    checks like "already exists" must see BOTH streams with ANSI codes
+    stripped and whitespace collapsed — an err-only raw check misses
+    the marker and turns a tolerated re-run into a hard failure."""
+    text = _ANSI_RE.sub("", err + " " + out)
+    return " ".join(text.split()).lower()
+
+
 def _write_tmp(name: str, content: str) -> str:
     path = os.path.join(tempfile.mkdtemp(prefix="opn-"), name)
     with open(path, "w", encoding="utf-8") as fh:
@@ -173,22 +188,24 @@ async def ensure_providers(cfg: OpnConfig) -> None:
     for e in cfg.llm_map:
         from .providers import profile_id
         path = _write_tmp(f"profile-{e.index}.yaml", profile_yaml(e))
-        rc, _, err = await run_cli("profile", "lint", "-f", path)
+        rc, out, err = await run_cli("profile", "lint", "-f", path)
         # lint also validates id-vs-existing; re-runs must tolerate it
         # exactly like the import below (state DB persists across deploys).
-        if rc != 0 and "already exists" not in (err + "").lower():
-            raise RuntimeError(f"profile lint failed #{e.index}: {err[:500]}")
-        rc, _, err = await run_cli("profile", "import", "-f", path)
-        if rc != 0 and "exists" not in err.lower():
-            raise RuntimeError(f"profile import failed #{e.index}: {err[:500]}")
+        # _cli_text: check both streams, ANSI-stripped, whitespace-collapsed
+        # — the deployed CLI's marker otherwise slips past raw err checks.
+        if rc != 0 and "already exists" not in _cli_text(out, err):
+            raise RuntimeError(f"profile lint failed #{e.index}: {(err or out)[:500]}")
+        rc, out, err = await run_cli("profile", "import", "-f", path)
+        if rc != 0 and "exists" not in _cli_text(out, err):
+            raise RuntimeError(f"profile import failed #{e.index}: {(err or out)[:500]}")
         # --from-existing reads the credential from the CLI process env,
         # keeping the real key out of argv/`ps`.
-        rc, _, err = await run_cli(
+        rc, out, err = await run_cli(
             "provider", "create", "--name", provider_name(e),
             "--type", profile_id(e), "--from-existing",
             env={e.cred_env: e.key})
-        if rc != 0 and "exists" not in err.lower():
-            raise RuntimeError(f"provider create failed #{e.index}: {err[:500]}")
+        if rc != 0 and "exists" not in _cli_text(out, err):
+            raise RuntimeError(f"provider create failed #{e.index}: {(err or out)[:500]}")
         log.info("provider ready: %s -> %s", provider_name(e), e.url)
 
 
@@ -383,7 +400,8 @@ async def restore_hermes_data(set_dir: str) -> None:
 
 
 async def _regenerate_providers(cfg: OpnConfig) -> None:
-    """Full delete+rebuild of every profile+provider from config/code.
+    """Re-sync every profile (update-or-import) and provider (delete+create)
+    from config/code.
 
     ensure_providers() is deliberately idempotent (skips existing), which
     pins the gateway-side profile document — endpoint rules AND the
@@ -398,31 +416,57 @@ async def _regenerate_providers(cfg: OpnConfig) -> None:
     because unlike ensure_providers the old provider is already gone."""
     from .providers import profile_id
     for e in cfg.llm_map:
-        # Tolerated failures: "not found" is the normal fresh case; a
-        # refused delete (still attached somewhere) resurfaces as the
-        # import-skip warning below.
-        await run_cli("provider", "delete", provider_name(e))
-        await run_cli("profile", "delete", profile_id(e))
         path = _write_tmp(f"profile-{e.index}.yaml", profile_yaml(e))
-        rc, _, err = await run_cli("profile", "lint", "-f", path)
+        rc, out, err = await run_cli("profile", "lint", "-f", path)
+        # Lint flags the still-existing profile by design ("already
+        # exists" on field=id) — that is the update case, not an error.
+        # Check stdout AND stderr: the deployed CLI prints the
+        # diagnostics block on stdout and only "Error: ..." on stderr,
+        # so an err-only check misses the marker.
+        if rc != 0 and "already exists" not in _cli_text(out, err):
+            raise RuntimeError(f"profile lint failed #{e.index}: {(err or out)[:500]}")
+        # Sanctioned overwrite (docs providers/overview: import is
+        # create-only; EXISTING profiles use `profile update <id>` —
+        # target id must match the file). No delete-then-reimport: that
+        # path died live when the delete was refused/unconfirmed
+        # (run_cli stdin is DEVNULL — any confirm prompt aborts) while
+        # our rc check tolerated it, leaving the OLD document (3.12
+        # binaries) imported and lint then hard-failing.
+        rc, out, err = await run_cli("profile", "update", profile_id(e),
+                                     "-f", path)
         if rc != 0:
-            raise RuntimeError(f"profile lint failed #{e.index}: {(err or '')[:500]}")
-        rc, _, err = await run_cli("profile", "import", "-f", path)
-        if rc != 0 and "exists" not in (err or "").lower():
-            raise RuntimeError(f"profile import failed #{e.index}: {(err or '')[:500]}")
-        if rc != 0:
-            log.warning("profile #%s delete was refused/ignored — recreate "
-                        "re-attaches the OLD document; check `openshell "
-                        "profile get %s` binaries", e.index, profile_id(e))
-        rc, _, err = await run_cli(
+            if not any(k in _cli_text(out, err)
+                       for k in ("not found", "does not exist", "no such")):
+                # stale-resource-version / read-only managed profile /
+                # gateway hiccup: deploying with the old document would
+                # silently resurrect stale endpoint+binaries rules.
+                raise RuntimeError(
+                    f"profile update failed #{e.index} ({profile_id(e)}): "
+                    f"{(err or out)[:500]}")
+            rc, out, err = await run_cli("profile", "import", "-f", path)
+            if rc != 0 and "exists" not in _cli_text(out, err):
+                raise RuntimeError(
+                    f"profile import failed #{e.index}: {(err or out)[:500]}")
+        # Credentials: `provider create` skips existing, so delete first
+        # to re-inject the config key. stdin carries a "y" in case the
+        # CLI confirms. A refused delete keeps the WORKING provider
+        # (credential simply not refreshed this cycle) — warn, do not
+        # destroy; but once deleted, a failed create is fatal (loud).
+        rc, out, err = await run_cli("provider", "delete",
+                                     provider_name(e), stdin=b"y\n")
+        if rc != 0 and "not found" not in _cli_text(out, err):
+            log.warning("provider delete %s failed — provider retained, "
+                        "credential NOT refreshed: %s", provider_name(e),
+                        (err or out).strip()[:300])
+        rc, out, err = await run_cli(
             "provider", "create", "--name", provider_name(e),
             "--type", profile_id(e), "--from-existing",
             env={e.cred_env: e.key})
-        if rc != 0:
+        if rc != 0 and "exists" not in _cli_text(out, err):
             raise RuntimeError(
-                f"provider create failed #{e.index}: {(err or '')[:500]} — the "
-                "old provider was deleted; fix config and restart the "
-                "launcher (ensure_providers will recreate it)")
+                f"provider create failed #{e.index}: {(err or out)[:500]} — "
+                "fix config and restart the launcher (ensure_providers "
+                "recreates missing providers)")
         log.info("provider regenerated: %s -> %s", provider_name(e), e.url)
 
 
