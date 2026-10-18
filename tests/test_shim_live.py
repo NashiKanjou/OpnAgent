@@ -52,6 +52,7 @@ class Upstream(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         SEEN["auth"] = self.headers.get("Authorization", "")
         SEEN["path"] = self.path
+        SEEN["host"] = self.headers.get("Host", "")
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         SEEN["body"] = body
         # No Content-Length, no manual chunking: HTTP/1.0 close-on-EOF
@@ -127,6 +128,12 @@ def main():
             body += blk
         if SEEN.get("auth") != f"Bearer {PLACEHOLDER}":
             fails.append(f"upstream saw auth={SEEN.get('auth')!r}")
+        # Non-default port -> authority MUST carry ":port" (OpenShell's
+        # tunnel check 403s request_authority_mismatch on a bare host at
+        # :8000 — live LM Studio; never tripped on 443 endpoints).
+        if SEEN.get("host") != f"localhost:{UPSTREAM_PORT}":
+            fails.append(f"upstream saw Host={SEEN.get('host')!r} "
+                         f"(expected 'localhost:{UPSTREAM_PORT}')")
         if SEEN.get("path") != "/v1/chat/completions":
             fails.append(f"upstream saw path={SEEN.get('path')!r}")
         if b"chunk0" not in body or b"chunk2" not in body:

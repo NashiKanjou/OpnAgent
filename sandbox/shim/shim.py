@@ -116,6 +116,18 @@ class Shim:
 
     DNS_TTL = 300.0
 
+    @property
+    def authority(self) -> str:
+        """Host-header value for the upstream leg: host[:port], port ONLY
+        when non-default (RFC 9110 §8.3.1 — a default-port authority must
+        not carry the port). The OpenShell supervisor compares this
+        authority against the authorized tunnel endpoint and answers
+        403 request_authority_mismatch on ANY deviation — bare host on
+        a :8000 endpoint included (live: LM Studio on a LAN host:port;
+        never seen on the 443 default-port endpoints)."""
+        default = 443 if self.secure else 80
+        return self.host if self.port == default else f"{self.host}:{self.port}"
+
     def resolve(self):
         now = time.monotonic()
         with self._dns_lock:
@@ -252,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             headers = {k: v for k, v in self.headers.items()
                        if k.lower() not in _SKIP_REQ}
-            headers["Host"] = self.shim.host
+            headers["Host"] = self.shim.authority
             headers["Authorization"] = f"Bearer {cred}"
             # Keep the placeholder in a Content-Type-sibling header too? No:
             # exactly one credential carrier (the supervisor swaps Bearer).
