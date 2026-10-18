@@ -216,16 +216,24 @@ def sandbox_spec_hash(cfg: OpnConfig) -> str:
     """sha256 over everything `sandbox create` bakes: image, shim spec,
     provider set, policy document, exposed port. Identical hash + a
     running sandbox => recreate can be skipped, hermes data untouched.
-    Deliberately EXCLUDES the real API keys: provider credentials live in
-    the gateway store and `provider create` skips existing entries, so a
-    key edit is not a sandbox-spec change (rotating creds into a live
-    provider remains a manual provider delete/create)."""
+
+    The profile DOCUMENTS are hashed too: they are gateway-side state
+    attached at create (endpoints + binaries binding), and recreate now
+    regenerates them (_regenerate_providers) — hashing their content is
+    what makes a generator/config change invalidate the skip-recreate.
+    profile_yaml carries no real key (only OPNL_<i> placeholder env
+    names), so this adds no secret to the payload.
+
+    The real API keys stay EXCLUDED deliberately: a key edit rotates a
+    credential in the gateway store (applied by recreate when it
+    happens), it does not change the sandbox's contract with hermes."""
     payload = json.dumps({
         "image": SANDBOX_IMAGE,
         "hermes_port": HERMES_PORT,
         "spec": _shim_spec(cfg),
         "policy": policy_yaml(cfg),
         "providers": [provider_name(e) for e in cfg.llm_map],
+        "profiles": [profile_yaml(e) for e in cfg.llm_map],
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -374,11 +382,59 @@ async def restore_hermes_data(set_dir: str) -> None:
             pass
 
 
+async def _regenerate_providers(cfg: OpnConfig) -> None:
+    """Full delete+rebuild of every profile+provider from config/code.
+
+    ensure_providers() is deliberately idempotent (skips existing), which
+    pins the gateway-side profile document — endpoint rules AND the
+    binaries binding — to whatever the FIRST-EVER `profile import` left:
+    the gateway state DB outlives sandbox recreates, so the
+    python3.12 -> python3.14 binaries fix never reached live deploys
+    (LLM egress kept failing [Errno 13] with a correct base policy).
+    Call this where breaking the live attach is safe — right after
+    `sandbox delete`. Real keys are re-fed from config through the
+    process env (--from-existing), never argv, so the churn costs no
+    secrets; a config entry missing its key then fails LOUD (raise),
+    because unlike ensure_providers the old provider is already gone."""
+    from .providers import profile_id
+    for e in cfg.llm_map:
+        # Tolerated failures: "not found" is the normal fresh case; a
+        # refused delete (still attached somewhere) resurfaces as the
+        # import-skip warning below.
+        await run_cli("provider", "delete", provider_name(e))
+        await run_cli("profile", "delete", profile_id(e))
+        path = _write_tmp(f"profile-{e.index}.yaml", profile_yaml(e))
+        rc, _, err = await run_cli("profile", "lint", "-f", path)
+        if rc != 0:
+            raise RuntimeError(f"profile lint failed #{e.index}: {(err or '')[:500]}")
+        rc, _, err = await run_cli("profile", "import", "-f", path)
+        if rc != 0 and "exists" not in (err or "").lower():
+            raise RuntimeError(f"profile import failed #{e.index}: {(err or '')[:500]}")
+        if rc != 0:
+            log.warning("profile #%s delete was refused/ignored — recreate "
+                        "re-attaches the OLD document; check `openshell "
+                        "profile get %s` binaries", e.index, profile_id(e))
+        rc, _, err = await run_cli(
+            "provider", "create", "--name", provider_name(e),
+            "--type", profile_id(e), "--from-existing",
+            env={e.cred_env: e.key})
+        if rc != 0:
+            raise RuntimeError(
+                f"provider create failed #{e.index}: {(err or '')[:500]} — the "
+                "old provider was deleted; fix config and restart the "
+                "launcher (ensure_providers will recreate it)")
+        log.info("provider regenerated: %s -> %s", provider_name(e), e.url)
+
+
 async def recreate_sandbox(cfg: OpnConfig) -> str:
     # Backup FIRST: raises out of here (fail-closed) leave the running
     # sandbox untouched — data loss must never ride on a half-done update.
     set_dir = await backup_hermes_data()
     await run_cli("sandbox", "delete", SANDBOX_NAME)  # idempotent
+    # Providers/profiles are config-derived documents; regenerate them
+    # now that the sandbox (the only live attach) is gone, so code-level
+    # changes to profile_yaml actually reach the gateway state DB.
+    await _regenerate_providers(cfg)
 
     spec = _shim_spec(cfg)
     spec_b64 = base64.b64encode(
