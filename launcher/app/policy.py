@@ -36,6 +36,7 @@ from .config import OpnConfig
 # via env so a base-image python bump is a compose-env fix, not a
 # launcher rebuild.
 BIN_PY_PATH = os.environ.get("OPN_SANDBOX_PYTHON", "/usr/bin/python3.14")
+
 # FUNCTIONS returning fresh dicts, on purpose: shared module-level
 # objects make PyYAML emit YAML anchors/aliases for the repeats, and
 # the deployed OpenShell parser rejects high alias ratios ("alias_
@@ -43,9 +44,6 @@ BIN_PY_PATH = os.environ.get("OPN_SANDBOX_PYTHON", "/usr/bin/python3.14")
 # with a ~11-host url_whitelist; the test box had too few hosts to
 # trip it). policy_yaml() additionally json round-trips as a root-cause
 # guard, so future sharing cannot reintroduce aliases either.
-BIN_PY_PATH = "/usr/bin/python3.12"
-
-
 def _pypi_binaries() -> list[dict]:
     return [{"path": BIN_PY_PATH}]
 
