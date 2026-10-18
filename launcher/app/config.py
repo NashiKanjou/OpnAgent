@@ -137,6 +137,48 @@ def _read_json(name: str) -> object:
         raise ConfigError(f"{name}: invalid JSON: {exc}")
 
 
+def _read_llm_map() -> object:
+    """LLM map with duplicate-key detection.
+
+    json.load SILENTLY keeps only the last of repeated object keys, and
+    the map's classic shape is {url: entry} — so "same service, two
+    protocols" written as the same URL twice (openai + anthropic) would
+    lose one entry without a word. Load through an object_pairs_hook,
+    and fail loudly naming the key. The same loader accepts the array
+    form, which exists precisely for that case (see load_config)."""
+    path = os.path.join(_config_dir(), F_LLM_MAP)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        return None
+    dups: list[str] = []
+
+    def hook(pairs):
+        seen: set[str] = set()
+        for k, _ in pairs:
+            if k in seen:
+                dups.append(k)
+            seen.add(k)
+        return dict(pairs)
+
+    try:
+        return json.loads(text, object_pairs_hook=hook)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{F_LLM_MAP}: invalid JSON: {exc}")
+    finally:
+        if dups:
+            raise ConfigError(
+                f"{F_LLM_MAP}: duplicate JSON key(s) {sorted(set(dups))} — "
+                "a JSON object keeps only the LAST duplicate, the earlier "
+                "entry would vanish silently. To map one service under two "
+                "protocols (same host/port, openai + anthropic), use the "
+                "array form instead: "
+                '[{"url": "http://host:port/v1", "protocol": "openai", '
+                '"inner-port": 18001, ...}, {"url": "http://host:port/v1", '
+                '"protocol": "anthropic", "inner-port": 18002, ...}]')
+
+
 def _list_cfg(raw, name: str) -> NameList:
     if raw is None:
         return NameList()
@@ -187,16 +229,43 @@ def _is_loopback(host: str) -> bool:
 def load_config() -> OpnConfig:
     warnings: list[str] = []
 
-    raw_map = _read_json(F_LLM_MAP)
+    raw_map = _read_llm_map()
     if raw_map is None:
         raise ConfigError(f"{F_LLM_MAP} is required")
-    if not isinstance(raw_map, dict) or not raw_map:
-        raise ConfigError(f"{F_LLM_MAP}: expected a non-empty object")
+    # Two accepted shapes: {url: entry} (classic — one URL can appear at
+    # most once; repeated keys are rejected by _read_llm_map) and the
+    # array form [entry-with-"url", ...], which lets ONE service be
+    # mapped twice, e.g. an LM Studio that serves both the OpenAI and
+    # the Anthropic wire format on the same host:port (two shims, two
+    # profiles/providers, hermes picks per provider).
+    if isinstance(raw_map, dict):
+        entries: list[tuple[str, dict]] = list(raw_map.items())
+    elif isinstance(raw_map, list):
+        entries = []
+        for item in raw_map:
+            if not isinstance(item, dict):
+                raise ConfigError(f"{F_LLM_MAP}: array entries must be objects")
+            if not item.get("url"):
+                raise ConfigError(f"{F_LLM_MAP}: array entries need a 'url' field")
+            entries.append((str(item["url"]),
+                            {k: v for k, v in item.items() if k != "url"}))
+    else:
+        raise ConfigError(f"{F_LLM_MAP}: expected a non-empty object or array")
+    if not entries:
+        raise ConfigError(f"{F_LLM_MAP}: expected a non-empty object or array")
     llm_map: list[LLMEntry] = []
     seen_ports: set[int] = set()
-    for i, (url, ent) in enumerate(raw_map.items()):
+    for i, (url, ent) in enumerate(entries):
         if not isinstance(ent, dict):
             raise ConfigError(f"{F_LLM_MAP}: entry for {url} must be an object")
+        if "provider" in ent:
+            # entrypoint.sh's e.get("provider") reads the SPEC built by
+            # main.py (always OpnAgentAPI<index>), never this file — the
+            # map field would silently do nothing, so say so.
+            warnings.append(
+                f"{F_LLM_MAP}: entry for {url}: 'provider' is ignored — the "
+                f"hermes-side name is generated as OpnAgentAPI{i}; drop the "
+                "key to silence this warning")
         try:
             port = int(ent["inner-port"])
         except (KeyError, TypeError, ValueError):

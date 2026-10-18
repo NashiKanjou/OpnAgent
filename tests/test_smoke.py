@@ -742,6 +742,46 @@ def main():
         except config.ConfigError:
             check(f"bad protocol {bad!r} rejected", True)
 
+    # --- array form: ONE service mapped under BOTH protocols ------------------
+    # (classic trap: {url: e} written twice collapses to the LAST entry under
+    # json.load — duplicate keys must fail loudly, array form is the fix.)
+    def _raw_map(text):
+        dd = tempfile.mkdtemp()
+        with open(os.path.join(dd, config.F_LLM_MAP), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.environ["OPN_CONFIG_DIR"] = dd
+        try:
+            return config.load_config()
+        finally:
+            os.environ["OPN_CONFIG_DIR"] = os.path.join(ROOT, "config")
+
+    acfg = _raw_map(
+        '[{"url": "http://192.0.2.7:8000/v1", "key": "k", "inner-port": 18121,'
+        ' "inner-key": "a", "protocol": "openai"},'
+        ' {"url": "http://192.0.2.7:8000/v1", "key": "k", "inner-port": 18122,'
+        ' "inner-key": "b", "protocol": "anthropic", "provider": "OpnAgentAPI0"}]')
+    check("array form maps ONE url twice",
+          len(acfg.llm_map) == 2 and acfg.llm_map[0].url == acfg.llm_map[1].url
+          and acfg.llm_map[0].protocol == "openai"
+          and acfg.llm_map[1].protocol == "anthropic"
+          and providers.profile_id(acfg.llm_map[0]) != providers.profile_id(acfg.llm_map[1]))
+    check("array entry 'provider' ignored WITH warning (name is generated)",
+          any("'provider' is ignored" in w for w in acfg.warnings))
+    try:
+        _raw_map('{"http://192.0.2.7:8000/v1": {"key":"k","inner-port":18123,'
+                 '"inner-key":"a"},'
+                 '"http://192.0.2.7:8000/v1": {"key":"k","inner-port":18124,'
+                 '"inner-key":"b"}}')
+        check("duplicate url keys rejected loudly", False)
+    except config.ConfigError as exc:
+        check("duplicate url keys rejected loudly",
+              "duplicate JSON key" in str(exc) and "array form" in str(exc))
+    try:
+        _raw_map('[{"key":"k","inner-port":18125,"inner-key":"a"}]')
+        check("array entry without 'url' rejected", False)
+    except config.ConfigError as exc:
+        check("array entry without 'url' rejected", "'url'" in str(exc))
+
     # --- entrypoint's ~/.hermes/config.yaml generator -------------------------
     import re as _re
     import subprocess
