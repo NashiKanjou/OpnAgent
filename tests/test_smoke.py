@@ -30,8 +30,8 @@ def main():
     check("llm entries parsed", len(cfg.llm_map) == 2)
     e0 = cfg.llm_map[0]
     check("host/port/path", (e0.host, e0.port, e0.path_prefix) ==
-          ("api.openai.com", 443, "/v1"))
-    check("openrouter path", cfg.llm_map[1].path_prefix == "/api/v1")
+          ("api.openai-compatible.com", 443, "/v1"))
+    check("bare second entry has empty path", cfg.llm_map[1].path_prefix == "")
     check("cred env naming", e0.cred_env == "OPNL_0" and
           cfg.llm_map[1].cred_env == "OPNL_1")
 
@@ -342,6 +342,15 @@ def main():
         config.F_URL_WL, json.dumps({"enabled": True, "list": ["a;rm -rf"]})))
     check("validate bad json", _rejects(config.F_URL_WL, "{oops"))
     check("validate non-dict", _rejects(config.F_URL_WL, "[1,2]"))
+    check("validate url wl host:port ok", not _rejects(
+        config.F_URL_WL, json.dumps({"enabled": True,
+                                     "list": ["10.0.0.5:22"]})))
+    check("validate url wl bad port rejected", _rejects(
+        config.F_URL_WL, json.dumps({"enabled": True,
+                                     "list": ["10.0.0.5:99999"]})))
+    check("validate url bl still host-only", _rejects(
+        config.F_URL_BL, json.dumps({"enabled": True,
+                                     "list": ["a.example.com:22"]})))
     check("validate bad pkg", _rejects(
         config.F_PKG_WL, json.dumps({"enabled": True, "list": ["bad pkg!"]})))
     check("validate unknown file", _rejects(config.F_LLM_MAP, "{}"))
@@ -716,6 +725,53 @@ def main():
     check("blacklist-only mode warns fully-closed",
           any("FULLY CLOSED" in w
               for w in _wl_bl(None, ["evil.example.com"]).warnings))
+
+    # --- url whitelist host[:port]: arbitrary TCP ports (native TCP) -------
+    cport = _wl_bl(["lan.example.com:22", "plain.example.com",
+                    "exact.example.com:443"], None)
+    pol_port = {r["endpoints"][0]["host"]: r
+                for k, r in policy.build_policy(cport)["network_policies"].items()
+                if k.startswith("url-allow-")}
+    check("bare host still 80+443",
+          pol_port["plain.example.com"]["endpoints"][0]
+          == {"host": "plain.example.com", "ports": [80, 443]})
+    check("bare host rule lacks LAN clients",
+          "/usr/bin/ssh" not in [b["path"]
+                                 for b in pol_port["plain.example.com"]["binaries"]])
+    check("explicit :443 = exact port only",
+          pol_port["exact.example.com"]["endpoints"][0]
+          == {"host": "exact.example.com", "port": 443})
+    check("custom port = native tcp (tls skip, no protocol)",
+          pol_port["lan.example.com"]["endpoints"][0]
+          == {"host": "lan.example.com", "port": 22, "tls": "skip"})
+    check("tcp rule binds ssh/telnet/nc binaries",
+          {b["path"] for b in pol_port["lan.example.com"]["binaries"]}
+          >= {policy.BIN_PY_PATH, "/usr/bin/curl", "/usr/bin/git",
+              "/usr/bin/ssh", "/usr/bin/telnet", "/usr/bin/nc"})
+    # blacklist trims a :port entry on the bare host
+    yport = policy.policy_yaml(_wl_bl(["evil.example.com:22",
+                                       "ok.example.com:8080"],
+                                      ["evil.example.com"]))
+    check("blacklist trims host:port entry",
+          "evil.example.com" not in yport and "ok.example.com" in yport)
+    # the wildcard-coverage trap sees through the port suffix too
+    try:
+        _wl_bl(["*.example.com:22"], ["evil.example.com"])
+        check("wildcard-with-port coverage rejected", False)
+    except config.ConfigError:
+        check("wildcard-with-port coverage rejected", True)
+    for bad_e in ("h:0", "h:99999", "h:abc", "h:22:33", "h:", ":22"):
+        try:
+            _wl_bl([bad_e], None)
+            check(f"bad wl entry {bad_e!r} rejected", False)
+        except config.ConfigError:
+            check(f"bad wl entry {bad_e!r} rejected", True)
+    # alias regression across tcp rules (fresh-dict discipline of _tcp_binaries)
+    ymix = policy.policy_yaml(_wl_bl(
+        [f"h{i:02d}.example.com:{2000 + i}" for i in range(12)], None))
+    check("many tcp-port rules are anchor/alias-free",
+          "&id" not in ymix and "*id" not in ymix
+          and ymix.count("tls: skip") == 12)
 
     check("catalog-provider parsed",
           _map_cfg({"catalog-provider": "openai"}).llm_map[0].catalog_provider == "openai")

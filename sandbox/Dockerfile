@@ -18,9 +18,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # build-essential/python3-dev: without their uv.lock we resolve
 # hermes' [all] extra with plain pip, and a dep occasionally sdist-builds.
 # (Their [matrix] extra — the one needing libolm — we do not carry.)
+# openssh-client/inetutils-telnet/netcat-openbsd: LAN clients for the
+# whitelist's host:<port> native-TCP rules (launcher/app/policy.py
+# _tcp_binaries binds their exact paths). Baked here — the agent cannot
+# apt-install at runtime (no mirror in the whitelist, and binaries are
+# policy-bound by path).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-venv python3-pip python3-dev build-essential \
         ca-certificates curl git ripgrep jq \
+        openssh-client inetutils-telnet netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # SQLite, pinned: ubuntu bases ship a libsqlite3 hermes blacklists at

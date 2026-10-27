@@ -194,6 +194,36 @@ def _safe_host_or_pkg(item: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9.*_\-/]+", item))
 
 
+# url_whitelist entries carry an optional ":port" (bare host = 80+443 as
+# before; any other single TCP port becomes a native-TCP rule in policy.py).
+# IPv6 literals are deliberately unsupported — the colon collides with the
+# port syntax.
+_HOST_PORT_RE = re.compile(r"([A-Za-z0-9.*_\-/]+)(?::(\d{1,5}))?")
+
+
+def split_host_port(item: str) -> tuple[str, int | None]:
+    """Split "host[:port]" -> (host, port|None); ConfigError on garbage
+    or an out-of-range port."""
+    m = _HOST_PORT_RE.fullmatch(item)
+    if not m:
+        raise ConfigError(f"invalid host[:port] entry {item!r}")
+    port = int(m.group(2)) if m.group(2) else None
+    if port is not None and not (1 <= port <= 65535):
+        raise ConfigError(f"port out of range 1..65535 in {item!r}")
+    return m.group(1), port
+
+
+def url_wl_bad(items: list[str]) -> list[str]:
+    """url_whitelist entries that are not a valid host[:port]."""
+    bad = []
+    for i in items:
+        try:
+            split_host_port(i)
+        except ConfigError:
+            bad.append(i)
+    return bad
+
+
 def _parse_listen() -> tuple[str, int]:
     """listen.json: {"listen_url": "<host>[:<port>]"} (scheme optional).
 
@@ -330,10 +360,14 @@ def load_config() -> OpnConfig:
     pkg_wl = _list_cfg(_read_json(F_PKG_WL), F_PKG_WL)
     pkg_bl = _list_cfg(_read_json(F_PKG_BL), F_PKG_BL)
 
-    for src, label in ((url_wl, "url white"), (url_bl, "url black")):
-        bad = [i for i in src.items if not _safe_host_or_pkg(i)]
-        if bad:
-            raise ConfigError(f"invalid {label} entries: {bad}")
+    # White list: host[:port]. Black list stays host-only — the trim works on
+    # the bare host (a blacklisted host cuts every port entry for it).
+    bad = url_wl_bad(url_wl.items)
+    if bad:
+        raise ConfigError(f"invalid url white entries: {bad}")
+    bad = [i for i in url_bl.items if not _safe_host_or_pkg(i)]
+    if bad:
+        raise ConfigError(f"invalid url black entries: {bad}")
     for src, label in ((pkg_wl, "pkg white"), (pkg_bl, "pkg black")):
         bad = [i for i in src.items if not re.fullmatch(r"[A-Za-z0-9._\-]+", i)]
         if bad:
@@ -348,9 +382,13 @@ def load_config() -> OpnConfig:
     if url_bl.enabled and url_wl.enabled:
         covered = []
         for w in url_wl.items:
-            if "*" not in w:
+            # Compare on the bare host: "host:port" is the same connection-
+            # layer allow as "host" for that port, so a wildcard with a port
+            # covers blacklisted hosts just like a portless one.
+            w_host, _ = split_host_port(w)
+            if "*" not in w_host:
                 continue
-            pat = re.compile("^" + re.escape(w.lower()).replace(r"\*", ".+") + "$")
+            pat = re.compile("^" + re.escape(w_host.lower()).replace(r"\*", ".+") + "$")
             for b in url_bl.items:
                 if "*" not in b and pat.match(b.lower()):
                     covered.append(f"{b} (covered by whitelist {w})")

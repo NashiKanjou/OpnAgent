@@ -40,7 +40,10 @@ def validate_list_text(name: str, text: str) -> None:
         nl = config._list_cfg(raw, name)
     except ConfigError as exc:
         raise ValueError(str(exc)) from None
-    if LIST_FILES[name] == "host":
+    if name == config.F_URL_WL:
+        # the only list whose entries carry an optional ":port"
+        bad = config.url_wl_bad(nl.items)
+    elif LIST_FILES[name] == "host":
         bad = [i for i in nl.items if not config._safe_host_or_pkg(i)]
     else:
         import re
