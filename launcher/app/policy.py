@@ -7,7 +7,13 @@ is denied. Translation rules:
    only place the package NAME appears; files.pythonhosted.org URLs are
    content hashes and cannot be name-filtered, so /packages/** is open).
  - python_pkg_blacklist -> deny_rules on /simple/<pkg>/* (deny beats allow).
- - url_whitelist        -> one allow rule per host entry.
+ - url_whitelist        -> one allow rule per "host[:port]" entry. Bare
+   host (or an explicit 80/443) -> plain endpoint on exactly those
+   ports (python/curl/git). Any other TCP port -> native-TCP rule:
+   `tls: skip`, no protocol/rules — OpenShell checks host, port and
+   executable then relays (SSH's server-first banner needs the skip);
+   binaries additionally carry the baked ssh/telnet/nc clients. ICMP
+   (ping) is NOT expressible — policy matches TCP host+port only.
  - url_blacklist        -> trims the whitelist (effective). Host-level deny
    of an otherwise-wide allow is NOT expressible; config.load_config()
    records a warning when only the blacklist is enabled.
@@ -23,7 +29,7 @@ import os
 
 import yaml
 
-from .config import OpnConfig
+from .config import OpnConfig, split_host_port
 
 # The interpreter hermes, pip and the shim all resolve to (OpenShell
 # identifies scripts by their interpreter binary). Must name the REAL
@@ -51,6 +57,14 @@ def _pypi_binaries() -> list[dict]:
 def _url_binaries() -> list[dict]:
     return [{"path": BIN_PY_PATH}, {"path": "/usr/bin/curl"},
             {"path": "/usr/bin/git"}]
+
+
+# Native-TCP rules (whitelist host:<non-http-port>): the LAN clients baked
+# into sandbox/Dockerfile. Fresh dicts for the same anchor reason as above.
+def _tcp_binaries() -> list[dict]:
+    return [{"path": BIN_PY_PATH}, {"path": "/usr/bin/curl"},
+            {"path": "/usr/bin/git"}, {"path": "/usr/bin/ssh"},
+            {"path": "/usr/bin/telnet"}, {"path": "/usr/bin/nc"}]
 
 
 def _simple_paths(pkg: str) -> list[str]:
@@ -109,13 +123,26 @@ def build_policy(cfg: OpnConfig) -> dict:
     blocked = set(h.lower() for h in cfg.url_bl.items) if cfg.url_bl.enabled else set()
     if cfg.url_wl.enabled:
         n = 0
-        for host in cfg.url_wl.items:
+        for item in cfg.url_wl.items:
+            host, port = split_host_port(item)
             if host.lower() in blocked:
-                continue  # black list trims the white list
+                continue  # black list trims the white list (on the bare host)
             n += 1
+            if port is None:
+                endpoint: dict = {"host": host, "ports": [80, 443]}
+                binaries = _url_binaries()
+            elif port in (80, 443):
+                # explicit single http(s) port stays an exact-port endpoint
+                endpoint = {"host": host, "port": port}
+                binaries = _url_binaries()
+            else:
+                # native TCP: unchecked relay (no protocol/rules/access/
+                # enforcement fields), client authenticates end to end
+                endpoint = {"host": host, "port": port, "tls": "skip"}
+                binaries = _tcp_binaries()
             rules[f"url-allow-{n:03d}"] = {
-                "endpoints": [{"host": host, "ports": [80, 443]}],
-                "binaries": _url_binaries(),
+                "endpoints": [endpoint],
+                "binaries": binaries,
             }
 
     # Unlisted paths are INACCESSIBLE; OpenShell only enriches the proxy-mode

@@ -43,6 +43,21 @@ GATEWAY_URL = os.environ.get("OPN_GATEWAY_URL", "http://gateway:8080")
 SANDBOX_NAME = os.environ.get("OPN_SANDBOX_NAME", "opnagent")
 SANDBOX_IMAGE = os.environ.get("OPN_SANDBOX_IMAGE", "opnagent-sandbox:latest")
 HERMES_PORT = int(os.environ.get("OPN_HERMES_PORT", "9119"))
+# --- code-server (browser VS Code) side-service ---------------------------
+# OPN_CODESERVER_PORT=0 disables the feature entirely (default). When set,
+# the launcher (re)starts code-server inside the sandbox via `sandbox exec`
+# (OPN_CODESERVER_CMD, run through the sandbox login shell), registers the
+# port as the named 'cs' endpoint with `service expose`, and serves it at
+# /<OPN_CODESERVER_PREFIX>/* behind the SAME users.json login gate. The
+# command should bind 127.0.0.1, use --abs-proxy-base-path matching the
+# prefix, and --trusted-origins (Host is pinned to the gateway vhost here).
+CODESERVER_PORT = int(os.environ.get("OPN_CODESERVER_PORT", "0"))
+CODESERVER_URL_PREFIX = os.environ.get("OPN_CODESERVER_PREFIX", "codeserver").strip("/")
+CODESERVER_START_CMD = os.environ.get("OPN_CODESERVER_CMD", "")
+# Generic sandbox self-heal hook: exec'd via `sandbox exec bash -lc` on
+# every bootstrap, before code-server startup (empty = off). Used to
+# re-materialise dotfiles/tools that live outside the backup sets.
+SANDBOX_INIT_CMD = os.environ.get("OPN_SANDBOX_INIT_CMD", "").strip()
 
 # --- sandbox-rebuild hermes backup/restore ---------------------------------
 # bootstrap() must recreate the sandbox whenever the baked-at-create spec
@@ -302,6 +317,60 @@ async def _expose_url() -> str:
     m = re.search(r"URL:\s*(\S+)", out + "\n" + err)
     if rc != 0 or not m:
         raise RuntimeError(f"service expose failed (rc={rc}): {(err or out)[:500]}")
+    return m.group(1)
+
+
+async def _run_sandbox_init() -> None:
+    """Run the persisted self-heal script inside the sandbox (best effort:
+    an init failure must never take the web entry point down)."""
+    if not SANDBOX_INIT_CMD:
+        return
+    try:
+        rc, out, err = await run_cli("sandbox", "exec", "-n", SANDBOX_NAME,
+                                     "--", "bash", "-lc", SANDBOX_INIT_CMD,
+                                     timeout=300)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sandbox init failed: %r", exc)
+        return
+    blob = "%s\n%s" % (out if isinstance(out, str) else out.decode(errors="replace"),
+                       err if isinstance(err, str) else err.decode(errors="replace"))
+    if rc != 0:
+        log.warning("sandbox init rc=%s: %s", rc, blob[-400:])
+    else:
+        log.info("sandbox init ok: %s", blob.strip()[-400:])
+
+
+async def _expose_code_server() -> str | None:
+    """(Re)start code-server in the sandbox and register its port as the
+    named 'cs' endpoint; returns the CLI-printed service URL.
+
+    Best-effort by design: code-server is a side service, and a failure
+    here must never take down the web entry point — every problem is
+    logged and folded into None (the /codeserver/* routes then 503)."""
+    if CODESERVER_PORT <= 0 or not CODESERVER_START_CMD or not CODESERVER_URL_PREFIX:
+        return None
+    try:
+        rc, out, err = await run_cli("sandbox", "exec", "-n", SANDBOX_NAME,
+                                     "--", "bash", "-lc", CODESERVER_START_CMD,
+                                     timeout=60)
+        if rc != 0:
+            log.warning("code-server start exec rc=%s: %s", rc,
+                        (err or out)[:300])
+    except Exception as exc:  # noqa: BLE001 — start failure is non-fatal
+        log.warning("code-server start exec failed: %r", exc)
+    try:
+        rc, out, err = await run_cli("service", "expose", SANDBOX_NAME,
+                                     str(CODESERVER_PORT), "cs")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("code-server expose failed: %r", exc)
+        return None
+    # run_cli's timeout branch yields b"timeout" (bytes) for err.
+    blob = "%s\n%s" % (out if isinstance(out, str) else out.decode(errors="replace"),
+                       err if isinstance(err, str) else err.decode(errors="replace"))
+    m = re.search(r"URL:\s*(\S+)", blob)
+    if rc != 0 or not m:
+        log.warning("code-server expose failed (rc=%s): %s", rc, blob[:300])
+        return None
     return m.group(1)
 
 
@@ -609,6 +678,14 @@ async def bootstrap() -> None:
     state["ready"] = True
     log.info("web entry point ready -> %s (dial %s, Host: %s)",
              service_url, origin, vhost)
+    await _run_sandbox_init()
+    cs_url = await _expose_code_server()
+    if cs_url:
+        cs_origin, cs_vhost = _service_target(cs_url)
+        state["cs_reverse"] = Reverse(cs_origin, cs_vhost,
+                                      location_prefix="/" + CODESERVER_URL_PREFIX)
+        log.info("code-server ready -> %s (dial %s, Host: %s, /%s/*)",
+                 cs_url, cs_origin, cs_vhost, CODESERVER_URL_PREFIX)
 
 
 @app.on_event("startup")
@@ -1410,6 +1487,69 @@ async def _proxy_http(request: Request) -> Response:
             return RedirectResponse("/login", status_code=302)
         return Response("unauthorized", status_code=401)
     return await state["reverse"].handle_http(request)
+
+
+# --------------------------------------------------------------------------
+# code-server (browser VS Code) side service — /codeserver/* -> the 'cs'
+# exposed endpoint (see _expose_code_server). Declared BEFORE the /ws and
+# catch-all routes so the prefix wins routing. Auth = the same users.json
+# login gate as the main entry point; code-server's own password stays on
+# as the service-layer second factor.
+# --------------------------------------------------------------------------
+
+_CS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+_CS_BASE = "/" + CODESERVER_URL_PREFIX if CODESERVER_URL_PREFIX else ""
+
+
+def _cs_strip(scope_obj) -> bool:
+    """Rewrite the dialled path: strip the /codeserver prefix (the upstream
+    code-server serves at / and was started with --abs-proxy-base-path
+    matching it). Returns False when the service is not up."""
+    if not (state["ready"] and state.get("cs_reverse")):
+        return False
+    p = scope_obj.get("path", "")
+    if p == _CS_BASE:
+        p = "/"
+    elif p.startswith(_CS_BASE + "/"):
+        p = p[len(_CS_BASE):]
+    scope_obj["path"] = p
+    return True
+
+
+async def _cs_http(request: Request) -> Response:
+    if not _auth_ok(request):
+        if request.method == "GET" and not request.url.path.startswith("/api/"):
+            return RedirectResponse("/login", status_code=302)
+        return Response("unauthorized", status_code=401)
+    if not _cs_strip(request.scope):
+        return Response("code-server not available", status_code=503,
+                        media_type="text/plain")
+    return await state["cs_reverse"].handle_http(request)
+
+
+async def _cs_ws(ws: WebSocket) -> None:
+    if not (_auth_ok(ws) and _cs_strip(ws.scope)):
+        await ws.close(code=4401)
+        return
+    await state["cs_reverse"].handle_ws(ws)
+
+
+if _CS_BASE:
+    @app.api_route(_CS_BASE, methods=_CS_METHODS)
+    async def cs_root(request: Request) -> Response:
+        return await _cs_http(request)
+
+    @app.api_route(_CS_BASE + "/{path:path}", methods=_CS_METHODS)
+    async def cs_path(request: Request, path: str) -> Response:
+        return await _cs_http(request)
+
+    @app.websocket(_CS_BASE)
+    async def cs_ws_root(ws: WebSocket) -> None:
+        await _cs_ws(ws)
+
+    @app.websocket(_CS_BASE + "/{path:path}")
+    async def cs_ws_path(ws: WebSocket, path: str) -> None:
+        await _cs_ws(ws)
 
 
 @app.websocket("/ws")

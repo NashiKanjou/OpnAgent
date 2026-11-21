@@ -32,11 +32,16 @@ _HAS_PLAIN_PROTOCOLS = "protocols" in inspect.signature(
 
 
 class Reverse:
-    def __init__(self, base_url: str, vhost: str | None = None):
+    def __init__(self, base_url: str, vhost: str | None = None,
+                 location_prefix: str = ""):
         self.base = base_url.rstrip("/")
         # Gateway service URLs are vhost-routed: dial the gateway origin but
         # pin Host to the CLI-printed authority (see main._service_target).
         self.vhost = vhost
+        # Subpath mounts (code-server under /codeserver): absolute-path
+        # Location redirects must stay under the mount prefix, or the
+        # browser jumps out of the prefix (e.g. /login -> launcher login).
+        self.location_prefix = location_prefix
         # Bounded pool with an EXPLICIT pool timeout: default httpx queues
         # forever when the pool is exhausted, which turned one leaked
         # streaming connection into a silent app-wide stall. Now
@@ -97,6 +102,13 @@ class Reverse:
         out_headers = {k: v for k, v in resp.headers.items()
                        if k.lower() not in HOP_BY_HOP | {"content-length"}
                        }
+        if self.location_prefix:
+            for k in list(out_headers):
+                if k.lower() == "location":
+                    v = out_headers.pop(k)
+                    if v.startswith("/"):
+                        v = self.location_prefix.rstrip("/") + v
+                    out_headers[k] = v
 
         async def aiterate():
             nbytes = 0
