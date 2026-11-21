@@ -54,6 +54,10 @@ HERMES_PORT = int(os.environ.get("OPN_HERMES_PORT", "9119"))
 CODESERVER_PORT = int(os.environ.get("OPN_CODESERVER_PORT", "0"))
 CODESERVER_URL_PREFIX = os.environ.get("OPN_CODESERVER_PREFIX", "codeserver").strip("/")
 CODESERVER_START_CMD = os.environ.get("OPN_CODESERVER_CMD", "")
+# Generic sandbox self-heal hook: exec'd via `sandbox exec bash -lc` on
+# every bootstrap, before code-server startup (empty = off). Used to
+# re-materialise dotfiles/tools that live outside the backup sets.
+SANDBOX_INIT_CMD = os.environ.get("OPN_SANDBOX_INIT_CMD", "").strip()
 
 # --- sandbox-rebuild hermes backup/restore ---------------------------------
 # bootstrap() must recreate the sandbox whenever the baked-at-create spec
@@ -314,6 +318,26 @@ async def _expose_url() -> str:
     if rc != 0 or not m:
         raise RuntimeError(f"service expose failed (rc={rc}): {(err or out)[:500]}")
     return m.group(1)
+
+
+async def _run_sandbox_init() -> None:
+    """Run the persisted self-heal script inside the sandbox (best effort:
+    an init failure must never take the web entry point down)."""
+    if not SANDBOX_INIT_CMD:
+        return
+    try:
+        rc, out, err = await run_cli("sandbox", "exec", "-n", SANDBOX_NAME,
+                                     "--", "bash", "-lc", SANDBOX_INIT_CMD,
+                                     timeout=300)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sandbox init failed: %r", exc)
+        return
+    blob = "%s\n%s" % (out if isinstance(out, str) else out.decode(errors="replace"),
+                       err if isinstance(err, str) else err.decode(errors="replace"))
+    if rc != 0:
+        log.warning("sandbox init rc=%s: %s", rc, blob[-400:])
+    else:
+        log.info("sandbox init ok: %s", blob.strip()[-400:])
 
 
 async def _expose_code_server() -> str | None:
@@ -654,6 +678,7 @@ async def bootstrap() -> None:
     state["ready"] = True
     log.info("web entry point ready -> %s (dial %s, Host: %s)",
              service_url, origin, vhost)
+    await _run_sandbox_init()
     cs_url = await _expose_code_server()
     if cs_url:
         cs_origin, cs_vhost = _service_target(cs_url)

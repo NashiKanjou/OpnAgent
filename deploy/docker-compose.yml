@@ -89,6 +89,8 @@ services:
       OPN_GATEWAY_URL: http://gateway:8080
       OPN_SANDBOX_IMAGE: opnagent-sandbox:latest
       OPN_BACKUP_MAX_BYTES: 5368709120
+      # --- sandbox self-heal (runs before code-server startup) ------------
+      OPN_SANDBOX_INIT_CMD: bash /home/opn/workspace/workspace/persist/init.sh
       # --- code-server (browser VS Code) at /codeserver/* ------------------
       # Set the port to enable (0 = off). OPN_CODESERVER_CMD is exec'd in
       # the sandbox login shell every launcher bootstrap (pgrep-guarded,
