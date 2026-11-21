@@ -71,7 +71,7 @@ RUN set -e; \
 # (0.19.0) is a v2026.7.20-era build carrying a dashboard bug — sessions
 # page never leaves "loading" — reproduced against hermes directly with
 # our stack fully bypassed, which is why PyPI stays off the table.
-ARG HERMES_REF=v0.22.2
+ARG HERMES_REF=v0.23.3
 RUN set -e; \
     git clone --depth 1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes; \
@@ -97,7 +97,7 @@ RUN set -e; \
 # Pinned to a release tag (GHCR images exist too, but we run inside OUR
 # sandbox image, not a sidecar — a sidecar would run tools outside the
 # OpenShell policy boundary, their two-container limitation #681).
-ARG HERMES_WEBUI_REF=v0.52.458
+ARG HERMES_WEBUI_REF=v0.52.723
 RUN set -e; \
     git clone --depth 1 --branch "${HERMES_WEBUI_REF}" \
       https://github.com/nesquena/hermes-webui.git /opt/hermes-webui; \
