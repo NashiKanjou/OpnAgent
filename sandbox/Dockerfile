@@ -134,37 +134,65 @@ RUN set -e; \
     ln -sf /usr/local/node/bin/npx  /usr/local/bin/npx; \
     node --version; npm --version
 
-# hermes' two frontends are NOT in git — web (dashboard SPA; vite's
-# outDir is hermes_cli/web_dist/) and ui-tui (chat TUI → ui-tui/dist/
-# entry.js). The official image builds them exactly like the two
-# `npm run build` lines below. Explicit `-w` workspaces mirror the
-# official image's curated install (root + web + ui-tui + the two `file:`
-# deps): apps/desktop (electron) and tests-js are deliberately NOT
-# installed. npm_config_install_links=false is their own image's env —
-# file: workspace deps must symlink so node_modules/.package-lock.json
-# agrees with the root lock; when it disagrees _tui_need_npm_install()
-# trips forever and hermes npm-installs at launch (EACCES/EROFS for us).
-#
-# HERMES_TUI_DIR makes _make_tui_argv take the prebuilt-bundle fast path
-# (node --expose-gc $HERMES_TUI_DIR/dist/entry.js) and skip the npm
-# cascade entirely; HERMES_WEB_DIST points the dashboard at the built
-# SPA (their ENVs, verbatim paths). entrypoint.sh re-exports both —
-# OpenShell does override image ENVs (HOME is proof).
-# Playwright/headless-shell (~900 MB) and the s6-overlay/sqlite-rebuild
-# machinery of their image are intentionally omitted: chat + dashboard
-# is the whole surface here.
-ENV npm_config_install_links=false \
-    HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist \
+
+# ============================================================
+# Hermes frontend build (official v0.23.3 pipeline)
+# ============================================================
+
+ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist \
     HERMES_TUI_DIR=/opt/hermes/ui-tui
-RUN set -e; cd /opt/hermes; \
-    npm install --no-audit --fetch-retries=5 \
-      -w web -w apps/shared -w ui-tui -w ui-tui/packages/hermes-ink; \
-    npm cache clean --force; \
-    (cd web && npm run build); \
-    (cd ui-tui && npm run build); \
-    test -f hermes_cli/web_dist/index.html; \
-    test -f ui-tui/dist/entry.js; \
-    echo "hermes assets: web_dist + ui-tui dist OK"
+
+RUN set -eu; \
+    cd /opt/hermes; \
+    \
+    echo "===== Install pinned pnpm ====="; \
+    python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)'; \
+    pnpm --version; \
+    \
+    echo "===== Prepare workspace dependencies ====="; \
+    node scripts/build/node-deps.mjs \
+        --source /opt/hermes \
+        --workspace ui-tui \
+        --workspace web; \
+    \
+    echo "===== Verify icon dependencies ====="; \
+    /opt/hermes-venv/bin/python -c "import PIL, resvg_py"; \
+    \
+    echo "===== Generate icons ====="; \
+    /opt/hermes-venv/bin/python -I \
+        scripts/generate_icons.py \
+        --source /opt/hermes \
+        --out /tmp/hermes-icons; \
+    \
+    echo "===== Build TUI ====="; \
+    node scripts/build/tui.mjs \
+        --source /opt/hermes \
+        --out /opt/products/tui; \
+    \
+    echo "===== Build Web Dashboard ====="; \
+    node scripts/build/web.mjs \
+        --source /opt/hermes \
+        --icons /tmp/hermes-icons \
+        --out /opt/products/web; \
+    \
+    echo "===== Install frontend artifacts ====="; \
+    mkdir -p \
+        /opt/hermes/ui-tui \
+        /opt/hermes/hermes_cli/web_dist; \
+    cp -a /opt/products/tui/dist \
+        /opt/hermes/ui-tui/; \
+    cp -a /opt/products/web/. \
+        /opt/hermes/hermes_cli/web_dist/; \
+    \
+    echo "===== Verify artifacts ====="; \
+    test -f /opt/hermes/ui-tui/dist/entry.js; \
+    test -f /opt/hermes/hermes_cli/web_dist/index.html; \
+    \
+    echo "===== Cleanup build artifacts ====="; \
+    rm -rf /opt/products /tmp/hermes-icons; \
+    \
+    echo "Hermes frontend build OK"
+
 
 # No explicit --uid: the ubuntu base already ships an `ubuntu` user at uid 1000.
 # OpenShell only requires non-root; our policies bind binaries by PATH, not uid.
