@@ -225,14 +225,41 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def _fp(v):
+        """Credential fingerprint for logs: 4-char prefix + length, never
+        the full value. The fake key is loopback-only, but on a mismatch
+        the presented value may well be the operator's REAL key (typed
+        into a client settings page) — that must not land in /tmp logs."""
+        return f"{v[:4]}(len {len(v)})" if v else "(absent)"
+
     def _check_key(self):
+        # 'any' disables the fake-key check, as advertised by --inner-key.
+        # The endpoint is loopback-only inside the sandbox and carries no
+        # real credential (the supervisor injects it at egress), so the
+        # fake key is a misconfiguration tripwire, not a security control.
+        if self.shim.inner_key == "any":
+            return True
         auth = self.headers.get("Authorization", "")
         bearer = auth.removeprefix("Bearer ").removeprefix("bearer ")
         if bearer and bearer == self.shim.inner_key:
             return True
         # Anthropic-protocol clients (hermes anthropic_messages, claude-code
         # with ANTHROPIC_API_KEY) present the fake key in x-api-key instead.
-        return self.headers.get("x-api-key", "") == self.shim.inner_key
+        xkey = self.headers.get("x-api-key", "")
+        if xkey == self.shim.inner_key:
+            return True
+        # 403 forensics (live incident): the recurring cause is the client
+        # presenting a DIFFERENT key — e.g. a real key once typed into
+        # hermes-webui settings persists in ~/.hermes (auth.json / webui
+        # key store) and outranks the entrypoint-generated config.yaml
+        # api_key, so every turn 403s while webui's self-heal keeps
+        # re-serving the same stale credential. Fingerprints only.
+        self.log_message("403 key mismatch path=%s bearer=%s x-api-key=%s "
+                         "expected=%s", self.path.split("?")[0],
+                         self._fp(bearer), self._fp(xkey),
+                         self._fp(self.shim.inner_key))
+        return False
 
     def _proxy(self, method):
         # Handler instances are reused across keep-alive requests; _denied

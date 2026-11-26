@@ -86,6 +86,18 @@ log "hermes -> default mapping = providers entry #${OPN_DEFAULT_INDEX:-0} (named
 # itself is managed here (this file is regenerated on every sandbox boot,
 # so anything set via `hermes model` inside the sandbox does not survive).
 mkdir -p "${HOME:-/home/opn}/.hermes"
+# ~/.hermes is PERSISTENT volume state. config.yaml and .env above/below
+# are rewritten from OPN_SHIM_SPEC every boot, but auth.json survives
+# sandbox recreates — and hermes' credential-pool resolution (and the
+# webui's auth-mismatch self-heal, which re-reads it) OUTRANK the
+# config.yaml api_key. Live incident: a key once typed into hermes-webui
+# settings persisted there; every turn then 403'd at the opn-shim
+# ("invalid api key for this local endpoint") and self-heal kept
+# re-serving the same stale credential, forever. Providers are
+# entrypoint-managed (see note above: anything set via `hermes model`
+# does not survive) and no OAuth/login state is supported in the
+# sandbox, so the stale store is cleared at boot.
+rm -f "${HOME:-/home/opn}/.hermes/auth.json"
 # Loopback-only secret for the gateway's api_server platform (HTTP API +
 # /health that hermes-webui's gateway pill probes). Regenerated per boot;
 # the webui process learns it via API_SERVER_KEY (its documented fallback).

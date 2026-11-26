@@ -912,6 +912,16 @@ def main():
     # profile switch) — the shim loop must export it per entry.
     check("entrypoint exports <NAME>_API_KEY per provider",
           '${pname^^}_API_KEY=$inner_key' in sh_src)
+    # auth.json is the ONE persisted ~/.hermes credential file the
+    # entrypoint does not generate — and hermes/webui resolve pool
+    # credentials from it AHEAD of the regenerated config.yaml api_key.
+    # A stale key parked there (webui settings once typed) 403s every
+    # turn at the shim; the boot-time rm -f is the invariant.
+    check("entrypoint clears stale ~/.hermes/auth.json at boot",
+          'rm -f "${HOME:-/home/opn}/.hermes/auth.json"' in sh_src)
+    check("auth.json is cleared before the config.yaml generator runs",
+          sh_src.index('rm -f "${HOME:-/home/opn}/.hermes/auth.json"')
+          < sh_src.index("if python3 - <<'PY'"))
     check("launcher names hermes providers OpnAgentAPI<N>",
           providers.hermes_provider_name(cfg.llm_map[0]) == "OpnAgentAPI0"
           and providers.hermes_provider_name(cfg.llm_map[1]) == "OpnAgentAPI1")
