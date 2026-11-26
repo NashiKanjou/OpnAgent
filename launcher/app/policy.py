@@ -7,7 +7,9 @@ is denied. Translation rules:
    only place the package NAME appears; files.pythonhosted.org URLs are
    content hashes and cannot be name-filtered, so /packages/** is open).
  - python_pkg_blacklist -> deny_rules on /simple/<pkg>/* (deny beats allow).
- - url_whitelist        -> one allow rule per "host[:port]" entry. Bare
+ - url_whitelist        -> one allow rule per "host[:port]" entry (or an
+   IPv4/CIDR entry -> hostless endpoint with allowed_ips — raw-IP
+   destinations are only expressible through allowed_ips). Bare
    host (or an explicit 80/443) -> plain endpoint on exactly those
    ports (python/curl/git). Any other TCP port -> native-TCP rule:
    `tls: skip`, no protocol/rules — OpenShell checks host, port and
@@ -24,6 +26,7 @@ reserved `_provider_*` rules automatically.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 
@@ -71,6 +74,32 @@ def _simple_paths(pkg: str) -> list[str]:
     # pip requests both /simple/<pkg> and (after the 301) /simple/<pkg>/;
     # `**` is not guaranteed to match the empty remainder, so list it.
     return [f"/simple/{pkg}", f"/simple/{pkg}/", f"/simple/{pkg}/**"]
+
+
+def _ip_allowed_ips(host: str) -> list[str] | None:
+    """allowed_ips rendering for a numeric whitelist entry, or None when
+    `host` is not an IPv4 literal/CIDR.
+
+    Why not host: <ip>: OpenShell's connection layer is DNS-placeholder
+    based — rules name HOSTS, and the sandbox answers DNS for allowed
+    hostnames with mapped placeholder addresses. A client dialing a raw
+    IP never queries DNS, so a host-literal rule is accepted by the
+    parser but never satisfied at the boundary (the operator-visible
+    "IP entry does nothing"). The documented expression for raw-IP
+    destinations is a HOSTLESS endpoint whose allowed_ips list pins the
+    destination (schema: "An endpoint can omit host only when it sets
+    allowed_ips"). IPv6 literals are unreachable through the host[:port]
+    list syntax anyway (the colon collides with the port) — config's
+    validator keeps rejecting them."""
+    if "*" in host:
+        return None
+    try:
+        net = ipaddress.ip_network(host, strict=False)
+    except ValueError:
+        return None
+    if net.version != 4:
+        return None
+    return [str(net)]
 
 
 # Schema forbids combining `access` with `rules`, and a rest endpoint needs
@@ -128,8 +157,21 @@ def build_policy(cfg: OpnConfig) -> dict:
             if host.lower() in blocked:
                 continue  # black list trims the white list (on the bare host)
             n += 1
-            if port is None:
-                endpoint: dict = {"host": host, "ports": [80, 443]}
+            aips = _ip_allowed_ips(host)
+            if aips is not None:
+                # numeric entry (bare IP or CIDR) -> hostless + allowed_ips
+                # (see _ip_allowed_ips); same port triad as the host form
+                if port is None:
+                    endpoint: dict = {"allowed_ips": aips, "ports": [80, 443]}
+                elif port in (80, 443):
+                    endpoint = {"allowed_ips": aips, "port": port}
+                else:
+                    endpoint = {"allowed_ips": aips, "port": port,
+                                "tls": "skip"}
+                binaries = _url_binaries() if port in (None, 80, 443) \
+                    else _tcp_binaries()
+            elif port is None:
+                endpoint = {"host": host, "ports": [80, 443]}
                 binaries = _url_binaries()
             elif port in (80, 443):
                 # explicit single http(s) port stays an exact-port endpoint

@@ -773,6 +773,73 @@ def main():
           "&id" not in ymix and "*id" not in ymix
           and ymix.count("tls: skip") == 12)
 
+    # --- IP / CIDR whitelist entries: hostless + allowed_ips rendering ------
+    # (OpenShell's connection layer is DNS-placeholder based; a host-literal
+    # IP rule parses but never matches a raw-IP dial — allowed_ips is the
+    # documented expression. Live incident: "IP in whitelist does nothing".)
+    cip = _wl_bl(["192.168.1.171", "192.168.1.171:18002", "10.0.0.0/8:22",
+                  "10.1.2.3:443", "github.com"], None)
+    _rules = [(k, r) for k, r in
+              policy.build_policy(cip)["network_policies"].items()
+              if k.startswith("url-allow-")]
+    eps = [r["endpoints"][0] for _, r in sorted(_rules)]
+    bins = [sorted(b["path"] for b in r["binaries"]) for _, r in sorted(_rules)]
+    check("bare IP -> hostless + allowed_ips /32 on 80+443",
+          eps[0] == {"allowed_ips": ["192.168.1.171/32"], "ports": [80, 443]}
+          and "/usr/bin/ssh" not in bins[0])
+    check("IP:custom-port -> hostless + tls skip + LAN clients",
+          eps[1] == {"allowed_ips": ["192.168.1.171/32"], "port": 18002,
+                     "tls": "skip"}
+          and "/usr/bin/ssh" in bins[1] and "/usr/bin/nc" in bins[1])
+    check("CIDR:22 -> network allowed_ips",
+          eps[2] == {"allowed_ips": ["10.0.0.0/8"], "port": 22, "tls": "skip"})
+    check("IP:443 -> exact-port, no tls",
+          eps[3] == {"allowed_ips": ["10.1.2.3/32"], "port": 443})
+    check("hostname entries keep the host form",
+          eps[4] == {"host": "github.com", "ports": [80, 443]})
+    for bad_e in ("192.168.1.*", "1.2.3.4/33", "1.2.3.4/x", "0.0.0.0/0",
+                  "127.0.0.1", "127.0.0.1:8080", "169.254.1.1",
+                  "http://192.168.1.1"):
+        try:
+            _wl_bl([bad_e], None)
+            check(f"bad IP entry {bad_e!r} rejected", False)
+        except config.ConfigError:
+            check(f"bad IP entry {bad_e!r} rejected", True)
+    # blacklist trims a numeric entry on the bare host (same semantics as
+    # hostname entries: a blacklisted host cuts every port entry for it)
+    yip = policy.policy_yaml(_wl_bl(["192.168.1.171:2222", "ok.example.com"],
+                                     ["192.168.1.171"]))
+    check("blacklist trims numeric entry on bare host",
+          "192.168.1.171" not in yip and "ok.example.com" in yip)
+    # re-whitelisting the LLM endpoint's host:port in tls:skip form would be
+    # rejected whole-policy by OpenShell (host+port must agree on tls) —
+    # catch at load time naming the pair.
+    dd = tempfile.mkdtemp()
+    with open(os.path.join(dd, config.F_LLM_MAP), "w") as fh:
+        json.dump({"http://a.example:8080/v1": {"key": "k", "inner-port": 18001,
+                                                "inner-key": "f"}}, fh)
+    with open(os.path.join(dd, config.F_URL_WL), "w") as fh:
+        json.dump({"enabled": True, "list": ["a.example:8080"]}, fh)
+    os.environ["OPN_CONFIG_DIR"] = dd
+    try:
+        config.load_config()
+        check("whitelist colliding with LLM endpoint rejected", False)
+    except config.ConfigError as exc:
+        check("whitelist colliding with LLM endpoint rejected",
+              "collides" in str(exc))
+    finally:
+        os.environ["OPN_CONFIG_DIR"] = os.path.join(ROOT, "config")
+
+    # --- unknown LLM-map keys warn (context_length != context-length) ------
+    wctx = _map_cfg({"context_length": 256000})
+    check("misspelled context_length warns with hint",
+          any("context_length -> context-length" in w
+              for w in wctx.warnings)
+          and wctx.llm_map[0].context_length == 0)
+    check("correct context-length parses warning-free",
+          not any("unknown key" in w for w in
+                  _map_cfg({"context-length": 262144}).warnings))
+
     check("catalog-provider parsed",
           _map_cfg({"catalog-provider": "openai"}).llm_map[0].catalog_provider == "openai")
     check("catalog-provider absent = empty",

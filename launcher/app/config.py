@@ -10,6 +10,7 @@ word): "LLM_Porting_Map.json", "url_whitelist.json", "url_blacklist.json",
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -27,6 +28,14 @@ F_PKG_WL = "python_pkg_whitelist.json"
 F_PKG_BL = "python_pkg_blacklist.json"
 F_USERS = "users.json"
 F_LISTEN = "listen.json"
+
+# Every key an LLM_Porting_Map entry understands. "provider" is accepted
+# (warned about separately by load_config) so it does not double-report
+# through the unknown-key warning.
+_KNOWN_MAP_KEYS = frozenset({
+    "url", "key", "inner-port", "inner-key", "model", "context-length",
+    "protocol", "catalog-provider", "provider",
+})
 
 LISTEN_DEFAULT_HOST = "127.0.0.1"
 LISTEN_DEFAULT_PORT = 8000
@@ -196,21 +205,42 @@ def _safe_host_or_pkg(item: str) -> bool:
 
 # url_whitelist entries carry an optional ":port" (bare host = 80+443 as
 # before; any other single TCP port becomes a native-TCP rule in policy.py).
-# IPv6 literals are deliberately unsupported — the colon collides with the
-# port syntax.
+# A "/" additionally promotes the entry to an IPv4 CIDR (hostless
+# allowed_ips rule); IPv6 literals stay unsupported — the colon collides
+# with the port syntax.
 _HOST_PORT_RE = re.compile(r"([A-Za-z0-9.*_\-/]+)(?::(\d{1,5}))?")
+
+# pure-numeric-looking host (possibly with wildcard stars): IP territory
+_IPISH_RE = re.compile(r"[0-9][0-9.]*\*?")
 
 
 def split_host_port(item: str) -> tuple[str, int | None]:
-    """Split "host[:port]" -> (host, port|None); ConfigError on garbage
-    or an out-of-range port."""
+    """Split "host[:port]" -> (host, port|None); ConfigError on garbage,
+    an out-of-range port, a malformed IPv4 CIDR, or an IP wildcard."""
     m = _HOST_PORT_RE.fullmatch(item)
     if not m:
         raise ConfigError(f"invalid host[:port] entry {item!r}")
+    host = m.group(1)
     port = int(m.group(2)) if m.group(2) else None
     if port is not None and not (1 <= port <= 65535):
         raise ConfigError(f"port out of range 1..65535 in {item!r}")
-    return m.group(1), port
+    if "/" in host:
+        try:
+            net = ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            raise ConfigError(
+                f"{item!r}: 'host/prefix' is only valid for IPv4 CIDRs "
+                "(e.g. 192.168.1.0/24)") from None
+        if net.version != 4:
+            raise ConfigError(f"{item!r}: IPv6 is not supported in "
+                              f"url_whitelist (colon collides with :port)")
+    if "*" in host and _IPISH_RE.fullmatch(host):
+        raise ConfigError(
+            f"{item!r}: IP wildcards cannot be enforced — OpenShell "
+            "wildcards match DNS names, not addresses. Write the range "
+            "as a CIDR instead (e.g. 192.168.1.0/24), which renders as "
+            "allowed_ips.")
+    return host, port
 
 
 def url_wl_bad(items: list[str]) -> list[str]:
@@ -349,6 +379,21 @@ def load_config() -> OpnConfig:
         if catalog and not re.fullmatch(r"[A-Za-z0-9._\-]{1,64}", catalog):
             raise ConfigError(f"{F_LLM_MAP}: entry for {url}: "
                               f"'catalog-provider' must be a short vendor id")
+        # Unknown keys are IGNORED by design (forward compat) — but that
+        # is exactly how "context_length" (underscore) silently loses a
+        # context window meant for "context-length" (hyphen). Name every
+        # unknown key, with a nearest-spelling hint where one exists.
+        unknown = sorted(set(ent) - _KNOWN_MAP_KEYS)
+        if unknown:
+            import difflib
+            hints = "; ".join(
+                f"{k} -> {c[0]}" if (c := difflib.get_close_matches(
+                    k, sorted(_KNOWN_MAP_KEYS), n=1, cutoff=0.6)) else k
+                for k in unknown)
+            warnings.append(
+                f"{F_LLM_MAP}: entry for {url}: unknown key(s) ignored: "
+                f"{hints} — a misspelled key is a MISSING setting, fix the "
+                "name (e.g. context-length, inner-key)")
         e = LLMEntry(url=url, key=str(key), inner_port=port,
                      inner_key=str(inner_key), index=i, model=model,
                      context_length=context_length, catalog_provider=catalog,
@@ -398,6 +443,37 @@ def load_config() -> OpnConfig:
                 "cannot be enforced (OpenShell has no host-level deny on raw "
                 "endpoints) — narrow the whitelist to explicit hosts, "
                 "removing: " + "; ".join(covered))
+
+    # Numeric whitelist entries render as hostless allowed_ips endpoints
+    # (policy.py). Two classes would reach OpenShell as something the
+    # parser accepts but the boundary then silently blocks (or rejects
+    # the WHOLE policy) — catch both at load time and name the entry.
+    llm_hostports = {(e.host.lower(), e.port) for e in llm_map}
+    for item in url_wl.items:
+        h, p = split_host_port(item)
+        if p is not None and p not in (80, 443) and (h.lower(), p) in llm_hostports:
+            raise ConfigError(
+                f"url_whitelist {item!r} collides with an LLM map endpoint on "
+                f"{h}:{p}: endpoints sharing host+port must declare the same "
+                "tls, and this entry renders tls: skip while the provider "
+                "endpoint has none — OpenShell would reject the whole policy. "
+                "The mapped LLM endpoint is already allowed through its "
+                "provider rule; drop the whitelist entry.")
+        if "/" not in h and not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", h):
+            continue  # hostname entry: no IP-specific semantics to validate
+        net = ipaddress.ip_network(h if "/" in h else h + "/32")
+        if (net.network_address.is_loopback or net.network_address.is_link_local
+                or net.network_address.is_unspecified
+                or net.broadcast_address.is_loopback
+                or net.broadcast_address.is_link_local
+                or net.prefixlen == 0):
+            raise ConfigError(
+                f"url_whitelist {item!r}: network policy NEVER authorizes an "
+                "outbound destination on loopback/link-local/unspecified "
+                "addresses (a /0 range covers them) — OpenShell accepts the "
+                "rule, then blocks every connection to it. Sandbox-local "
+                "services need no rule; for services on the gateway host "
+                "use host.openshell.internal.")
 
     if url_bl.enabled and not url_wl.enabled:
         warnings.append(
